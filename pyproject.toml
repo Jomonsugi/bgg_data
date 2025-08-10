@@ -1,0 +1,22 @@
+[project]
+name = "bgg-data"
+version = "0.1.0"
+description = "BoardGameGeek data collection and rulebook fetching package"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "beautifulsoup4>=4.13.4",
+    "requests>=2.32.4",
+    "requests-html>=0.10.0",
+    "PyPDF2>=3.0.0",
+    "together>=0.2.0",
+    "selenium>=4.15.0",
+    "pillow>=10.0.0",
+    "pydantic>=2.0.0",
+    "tavily-python>=0.7.0",
+    "langgraph>=0.2.35",
+    "mlx-vlm>=0.1.0",
+]
+
+[project.scripts]
+bgg-fetch-rulebooks = "bgg_data.cli.main:main"
