@@ -1,6 +1,6 @@
 # BGG Data Package
 
-A Python package for collecting BoardGameGeek game data and downloading official rulebooks.
+A Python package for exploring and experimenting with strategies to collect board game data from LLM vision models, to agentic workflows, and web scraping techniques. 
 
 ## Quick Start
 
