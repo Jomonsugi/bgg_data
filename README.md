@@ -54,6 +54,23 @@ uv run python -m bgg_data.cli.main --rank-from 1 --rank-to 20
 uv run python -m bgg_data.cli.main --limit 5 --screenshots
 ```
 
+### List Missing Rulebooks Only
+
+Quickly see which games (in a rank range or limit) are still missing rulebooks without running the fetcher:
+
+```bash
+# List all missing
+uv run python -m bgg_data.cli.main --list-missing
+
+# List missing within a rank window
+uv run python -m bgg_data.cli.main --rank-from 1 --rank-to 200 --list-missing
+
+# List missing with a limit
+uv run python -m bgg_data.cli.main --limit 50 --list-missing
+```
+
+This uses the filenames in `rulebooks/` and de-duplicates by game. PDFs are preferred; HTML is counted only when no PDF exists for that game.
+
 ### Vision Backend
 
 - Default: Together.ai (requires `TOGETHER_API_KEY`)

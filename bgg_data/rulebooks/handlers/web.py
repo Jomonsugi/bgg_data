@@ -5,7 +5,7 @@ Web page handling and screenshot capture for the LLM-based rulebook fetcher.
 import time
 import logging
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -15,6 +15,7 @@ from selenium.common.exceptions import TimeoutException, WebDriverException, NoS
 from PIL import Image
 import io
 import base64
+import json
 
 from ...config import HEADLESS_BROWSER, BROWSER_TIMEOUT, SCREENSHOT_DELAY, RULEBOOK_SELECTORS
 
@@ -61,9 +62,20 @@ class WebPageHandler:
             chrome_options.add_argument("--disable-plugins")
             chrome_options.add_argument("--disable-images")  # Faster loading
             
+            # Enable performance logging to capture network events
+            try:
+                chrome_options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
+            except Exception:
+                pass
+            
             self.driver = webdriver.Chrome(options=chrome_options)
             self.driver.set_page_load_timeout(self.timeout)
             self.wait = WebDriverWait(self.driver, self.timeout)
+            try:
+                # Enable CDP Network domain for response body access
+                self.driver.execute_cdp_cmd("Network.enable", {})
+            except Exception:
+                pass
             
             logger.info("Chrome WebDriver initialized successfully")
             
@@ -127,6 +139,57 @@ class WebPageHandler:
         except Exception as e:
             logger.error(f"Error navigating to {url}: {e}")
             return False
+
+    def capture_pdf_via_network(self, wait_seconds: float = 3.0) -> Tuple[Optional[str], Optional[bytes]]:
+        """
+        Inspect performance logs and CDP to capture any PDF response and body.
+        Returns (url, content_bytes) if a PDF response was observed.
+        """
+        try:
+            end_time = time.time() + max(0.5, wait_seconds)
+            seen_ids = set()
+            while time.time() < end_time:
+                try:
+                    entries = self.driver.get_log('performance')
+                except Exception:
+                    time.sleep(0.2)
+                    continue
+                for entry in entries:
+                    try:
+                        msg = json.loads(entry.get('message', '{}')).get('message', {})
+                        if msg.get('method') != 'Network.responseReceived':
+                            continue
+                        params = msg.get('params', {})
+                        response = params.get('response', {})
+                        mime = (response.get('mimeType') or '').lower()
+                        if 'pdf' not in mime:
+                            continue
+                        request_id = params.get('requestId')
+                        if not request_id or request_id in seen_ids:
+                            continue
+                        seen_ids.add(request_id)
+                        url = response.get('url') or ''
+                        # Fetch response body via CDP
+                        try:
+                            body = self.driver.execute_cdp_cmd('Network.getResponseBody', {'requestId': request_id})
+                            data = body.get('body')
+                            if data is None:
+                                continue
+                            if body.get('base64Encoded'):
+                                content_bytes = base64.b64decode(data)
+                            else:
+                                content_bytes = data.encode('latin1')
+                            if content_bytes and content_bytes[:4] == b'%PDF':
+                                logger.info(f"Captured PDF via network: {url} ({len(content_bytes)} bytes)")
+                                return url, content_bytes
+                        except Exception as e:
+                            logger.debug(f"CDP getResponseBody failed: {e}")
+                    except Exception:
+                        continue
+                time.sleep(0.2)
+        except Exception as e:
+            logger.debug(f"Network capture error: {e}")
+        return None, None
 
     def dismiss_all_popups(self) -> bool:
         """
@@ -650,32 +713,31 @@ class WebPageHandler:
             english_hints = ['english', 'en', 'us', 'uk']
             non_english_hints = ['de', 'german', 'fr', 'french', 'es', 'spanish', 'it', 'italian', 'pt', 'portuguese', 'ru', 'russian', 'pl', 'polish', 'zh', 'cn', 'jp', 'ja', 'japanese', 'ko', 'korean']
 
-            # Prefer direct PDF links that look like the official rulebook, with English weighting
-            pdf_links = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='.pdf']")
-            candidates = []
-            for link in pdf_links:
-                href = (link.get_attribute('href') or '').strip()
-                text = (link.text or '').lower()
-                if not href:
-                    continue
-                score = 0
-                href_l = href.lower()
-                # Strongly prefer "rulebook"
-                if 'rulebook' in text or 'rulebook' in href_l:
-                    score += 20
-                # Otherwise accept broader indicators
-                elif any(ind in text for ind in indicators) or any(ind in href_l for ind in indicators):
-                    score += 10
-                # Language weighting
-                if any(h in href_l for h in ['_en', '-en', '/en/']) or any(h in text for h in english_hints):
-                    score += 15
-                if any(h in href_l for h in ['_de', '-de', '/de/', '_fr', '-fr', '/fr/', '_es', '-es', '/es/']) or any(h in text for h in non_english_hints):
-                    score -= 12
-                # De-emphasize supporting docs vs rulebook
-                for strong in ['rules-reference', 'rules_reference', 'reference', 'quick-start', 'quickstart', 'learn-to-play', 'how-to-play']:
-                    if strong in href_l:
-                        score -= 5
-                candidates.append((score, href))
+            def collect_pdf_candidates_in_context() -> list:
+                local_candidates = []
+                links = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='.pdf']")
+                for link in links:
+                    href = (link.get_attribute('href') or '').strip()
+                    text = (link.text or '').lower()
+                    if not href:
+                        continue
+                    score = 0
+                    href_l = href.lower()
+                    if 'rulebook' in text or 'rulebook' in href_l:
+                        score += 20
+                    elif any(ind in text for ind in indicators) or any(ind in href_l for ind in indicators):
+                        score += 10
+                    if any(h in href_l for h in ['_en', '-en', '/en/']) or any(h in text for h in english_hints):
+                        score += 15
+                    if any(h in href_l for h in ['_de', '-de', '/de/', '_fr', '-fr', '/fr/', '_es', '-es', '/es/']) or any(h in text for h in non_english_hints):
+                        score -= 12
+                    for strong in ['rules-reference', 'rules_reference', 'reference', 'quick-start', 'quickstart', 'learn-to-play', 'how-to-play']:
+                        if strong in href_l:
+                            score -= 5
+                    local_candidates.append((score, href))
+                return local_candidates
+
+            candidates = collect_pdf_candidates_in_context()
 
             # Also consider icon-only or JS-triggered downloads
             icon_candidates = self.driver.find_elements(By.XPATH,
@@ -714,6 +776,28 @@ class WebPageHandler:
                 logger.info(f"Found rulebook PDF via HTML check (best-scored): {best}")
                 return best
 
+            # Scan inside iframes as well
+            try:
+                frames = self.driver.find_elements(By.CSS_SELECTOR, "iframe")
+                for frame in frames[:5]:
+                    try:
+                        self.driver.switch_to.frame(frame)
+                        inner = collect_pdf_candidates_in_context()
+                        if inner:
+                            inner.sort(key=lambda x: x[0], reverse=True)
+                            best_inner = inner[0][1]
+                            logger.info(f"Found rulebook PDF inside iframe via HTML check: {best_inner}")
+                            return best_inner
+                    except Exception:
+                        pass
+                    finally:
+                        try:
+                            self.driver.switch_to.default_content()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
             # Fallback: any anchor whose text suggests rules/rulebook (can be HTML page)
             xpath_text = " or ".join([
                 f"contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{q}')" for q in indicators
@@ -731,6 +815,128 @@ class WebPageHandler:
         except Exception as e:
             logger.warning(f"Error during HTML check: {e}")
             return None
+    
+    def collect_candidate_links(self, max_candidates: int = 6) -> List[Dict[str, str]]:
+        """
+        Collect top candidate links/buttons that might lead to a rulebook.
+        Returns a list of dicts: {"text": ..., "href": ...}
+        """
+        try:
+            indicators = [
+                'rulebook', 'rules', 'manual', 'instructions', 'guide',
+                'learn to play', 'how to play', 'reference', 'rules reference',
+                'rule reference', 'playbook', 'download', 'support', 'resources'
+            ]
+            english_hints = ['english', 'en', 'us', 'uk']
+            non_english_hints = ['de', 'german', 'fr', 'french', 'es', 'spanish', 'it', 'italian', 'pt', 'portuguese', 'ru', 'russian', 'pl', 'polish', 'zh', 'cn', 'jp', 'ja', 'japanese', 'ko', 'korean']
+
+            def score_link(text: str, href: str) -> int:
+                t = (text or '').lower()
+                h = (href or '').lower()
+                s = 0
+                if '.pdf' in h:
+                    s += 25
+                if 'rulebook' in t or 'rulebook' in h:
+                    s += 20
+                elif any(ind in t for ind in indicators) or any(ind in h for ind in indicators):
+                    s += 10
+                if any(hh in h for hh in ['_en', '-en', '/en/']) or any(hh in t for hh in english_hints):
+                    s += 12
+                if any(hh in h for hh in ['_de', '-de', '/de/', '_fr', '-fr', '/fr/', '_es', '-es', '/es/']) or any(hh in t for hh in non_english_hints):
+                    s -= 10
+                for demote in ['quickstart', 'quick-start', 'reference', 'faq']:
+                    if demote in h:
+                        s -= 5
+                return s
+
+            seen = set()
+            cands: List[Tuple[int, str, str]] = []
+            # anchors
+            for a in self.driver.find_elements(By.CSS_SELECTOR, "a[href]"):
+                try:
+                    href = (a.get_attribute('href') or '').strip()
+                    if not href or href in seen:
+                        continue
+                    seen.add(href)
+                    text = (a.text or '').strip()
+                    cands.append((score_link(text, href), text, href))
+                except Exception:
+                    continue
+            # buttons with data-url/data-href
+            for b in self.driver.find_elements(By.CSS_SELECTOR, "button, [role='button']"):
+                try:
+                    href = ''
+                    for attr in ['data-url', 'data-href', 'data-download', 'onclick']:
+                        val = (b.get_attribute(attr) or '').strip()
+                        if val and ('http' in val or '.pdf' in val):
+                            href = val
+                            break
+                    if not href or href in seen:
+                        continue
+                    seen.add(href)
+                    text = (b.text or b.get_attribute('aria-label') or b.get_attribute('title') or '').strip()
+                    cands.append((score_link(text, href), text, href))
+                except Exception:
+                    continue
+            # sort and return top
+            cands.sort(key=lambda x: x[0], reverse=True)
+            top = []
+            for s, t, h in cands[:max_candidates * 2]:
+                if len(top) >= max_candidates:
+                    break
+                top.append({"text": t, "href": h})
+            return top
+        except Exception:
+            return []
+
+    def take_element_screenshots_for_candidates(self, candidates: List[Dict[str, str]], max_images: int = 2) -> List[bytes]:
+        """
+        Capture screenshots focused on the top candidate link/button elements.
+        Returns a list of PNG bytes for up to max_images candidates.
+        """
+        shots: List[bytes] = []
+        if not candidates:
+            return shots
+        try:
+            for cand in candidates[: max_images * 2]:
+                href = (cand.get('href') or '').strip()
+                if not href:
+                    continue
+                el = None
+                # Try exact anchor match
+                try:
+                    el = self.driver.find_element(By.CSS_SELECTOR, f"a[href='{href}']")
+                except Exception:
+                    el = None
+                # Try partial match when exact fails
+                if el is None:
+                    try:
+                        el = self.driver.find_element(By.XPATH, f"//a[contains(@href, '{href[:40]}')]")
+                    except Exception:
+                        el = None
+                # Try button-like elements with data-url
+                if el is None:
+                    try:
+                        el = self.driver.find_element(By.XPATH, f"//*[@data-url='{href}' or contains(@onclick, '{href}')]")
+                    except Exception:
+                        el = None
+                if el is None:
+                    continue
+                try:
+                    # Scroll into view and add a small margin around it using JS
+                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'center'});", el)
+                    time.sleep(0.2)
+                    # Prefer element-native screenshot when supported
+                    png = el.screenshot_as_png
+                    if png:
+                        shots.append(png)
+                    if len(shots) >= max_images:
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return shots
     
     def cleanup(self) -> None:
         """Clean up resources."""

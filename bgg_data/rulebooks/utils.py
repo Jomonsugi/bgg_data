@@ -53,25 +53,32 @@ def extract_game_name_from_filename(filename: str) -> str:
 
 def is_rulebook_already_downloaded(game_name: str, rulebooks_dir: Path) -> bool:
     """
-    Check if a rulebook for a specific game already exists.
+    Check if a rulebook for the given game already exists.
+    Uses exact filename matching to avoid false positives.
     
     Args:
         game_name: Name of the game to check
-        rulebooks_dir: Path to the rulebooks directory
+        rulebooks_dir: Directory containing rulebooks
         
     Returns:
-        True if rulebook exists, False otherwise
+        True if rulebook already exists, False otherwise
     """
     if not rulebooks_dir.exists():
         return False
     
-    # Normalize game name for comparison
-    normalized_game_name = game_name.lower().replace(' ', '-').replace(':', '').replace("'", '')
+    # Create expected filename patterns for this specific game
+    sanitized_name = sanitize_filename(game_name.replace(' ', '-').replace(':', ''))
+    expected_patterns = [
+        f"{sanitized_name}_rules.pdf",
+        f"{sanitized_name}_rules.html",
+        f"{sanitized_name}_rulebook.pdf", 
+        f"{sanitized_name}_manual.pdf"
+    ]
     
-    for file_path in rulebooks_dir.glob("*.pdf"):
-        existing_name = extract_game_name_from_filename(file_path.name).lower()
-        if normalized_game_name in existing_name or existing_name in normalized_game_name:
-            logger.info(f"Rulebook for '{game_name}' already exists: {file_path.name}")
+    # Check for exact matches only
+    for pattern in expected_patterns:
+        if (rulebooks_dir / pattern).exists():
+            logger.info(f"Rulebook for '{game_name}' already exists: {pattern}")
             return True
     
     return False
@@ -163,6 +170,16 @@ def create_rulebook_filename(game_name: str, url: str) -> str:
     extension = 'pdf' if '.pdf' in url.lower() else 'html'
     
     return f"{clean_name}_rules.{extension}"
+
+
+def is_pdf_or_html_path(path: Optional[str]) -> bool:
+    """
+    Check if a filesystem path string refers to a PDF or HTML file.
+    """
+    if not path:
+        return False
+    p = path.lower()
+    return p.endswith('.pdf') or p.endswith('.html') or p.endswith('.htm')
 
 
 def is_likely_english(url: str, text: str = "") -> bool:

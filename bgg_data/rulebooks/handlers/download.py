@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Optional, Tuple
 import time
 
-from ..utils import validate_url, create_rulebook_filename, log_download_attempt, is_likely_english
+from ..utils import create_rulebook_filename, log_download_attempt, is_likely_english
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import re
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
@@ -41,6 +43,19 @@ class DownloadHandler:
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         })
+        # Install retry adapter and preferred Accept headers
+        retries = Retry(
+            total=3,
+            backoff_factor=0.5,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "OPTIONS"],
+        )
+        adapter = HTTPAdapter(max_retries=retries)
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
+        self.session.headers.update({
+            'Accept': 'application/pdf, text/html;q=0.9,*/*;q=0.8'
+        })
     
     def download_rulebook(self, url: str, game_name: str, save_screenshots: bool = False, screenshot_path: Optional[Path] = None, web_handler=None) -> Tuple[bool, Optional[str], Optional[str]]:
         """
@@ -62,12 +77,19 @@ class DownloadHandler:
             if 'dropbox.com' in url and ('?dl=0' in url or '&dl=0' in url):
                 url = url.replace('?dl=0', '?dl=1').replace('&dl=0', '&dl=1')
                 logger.info(f"Converted Dropbox link to direct download: {url}")
+            # Convert Google Drive file links to direct download when possible
+            try:
+                if 'drive.google.com' in url and '/file/d/' in url:
+                    m = re.search(r"/file/d/([a-zA-Z0-9_-]+)/", url)
+                    if m:
+                        file_id = m.group(1)
+                        direct = f"https://drive.usercontent.google.com/uc?id={file_id}&export=download"
+                        logger.info(f"Converted Google Drive link to direct download: {direct}")
+                        url = direct
+            except Exception:
+                pass
             
-            # Validate URL first
-            if not validate_url(url):
-                error_msg = f"Invalid or inaccessible URL: {url}"
-                log_download_attempt(game_name, url, False, error_msg)
-                return False, error_msg, None
+            # Skip pre-validation HEAD/GET to avoid extra round-trips; rely on robust retrying and error handling below
             
             # Create filename using game name for consistent naming (may be updated later if URL changes)
             filename = create_rulebook_filename(game_name, url)
@@ -90,33 +112,67 @@ class DownloadHandler:
             # Download the file with retries
             success, content = self._download_with_retries(url)
             if not success:
-                # Try browser-based download if web_handler is available
+                # Try a referer + cookies retry and/or browser-based download if web_handler is available
                 if web_handler:
-                    logger.info("Direct download failed, trying browser-based download...")
-                    browser_success, browser_content = self._download_with_browser(url, web_handler)
-                    if browser_success:
-                        success, content = True, browser_content
-                    else:
-                        error_msg = f"Failed to download after {self.max_retries} retries (including browser fallback)"
-                        log_download_attempt(game_name, url, False, error_msg)
-                        return False, error_msg, None
+                    # Attempt again with Referer and cookies copied from the browser context
+                    try:
+                        try:
+                            current_url = web_handler.driver.current_url
+                        except Exception:
+                            current_url = None
+                        referer = current_url
+                        if not referer:
+                            from urllib.parse import urlparse
+                            pu = urlparse(url)
+                            referer = f"{pu.scheme}://{pu.netloc}"
+                        extra_headers = {"Referer": referer, "Origin": referer}
+                        # Copy cookies from selenium into our session for this domain
+                        try:
+                            cookies = web_handler.driver.get_cookies() or []
+                            for c in cookies:
+                                try:
+                                    name = c.get('name')
+                                    value = c.get('value')
+                                    domain = c.get('domain') or None
+                                    path = c.get('path') or '/'
+                                    if name and value:
+                                        self.session.cookies.set(name, value, domain=domain, path=path)
+                                except Exception:
+                                    continue
+                        except Exception:
+                            pass
+                        ref_success, ref_content = self._download_with_retries_custom(url, extra_headers)
+                        if ref_success:
+                            success, content = True, ref_content
+                        else:
+                            logger.info("Direct + referer/cookies download failed, trying browser-based download...")
+                            browser_success, browser_content = self._download_with_browser(url, web_handler)
+                            if browser_success:
+                                success, content = True, browser_content
+                            else:
+                                error_msg = f"Failed to download after {self.max_retries} retries (including browser and referer/cookies fallbacks)"
+                                log_download_attempt(game_name, url, False, error_msg)
+                                return False, error_msg, None
+                    except Exception:
+                        logger.info("Referer/cookies retry failed unexpectedly, trying browser-based download...")
+                        browser_success, browser_content = self._download_with_browser(url, web_handler)
+                        if browser_success:
+                            success, content = True, browser_content
+                        else:
+                            error_msg = f"Failed to download after {self.max_retries} retries (including browser fallback)"
+                            log_download_attempt(game_name, url, False, error_msg)
+                            return False, error_msg, None
                 else:
                     error_msg = f"Failed to download after {self.max_retries} retries"
                     log_download_attempt(game_name, url, False, error_msg)
                     return False, error_msg, None
             
             # Validate content: prefer PDFs; if HTML, try to extract a PDF link
-            content_type = ''
-            try:
-                head = self.session.head(url, timeout=10, allow_redirects=True)
-                content_type = head.headers.get('content-type', '').lower()
-            except Exception:
-                pass
-
+            content_type = ''  # infer primarily from content bytes
             is_pdf_like = self._is_valid_pdf(content)
             if not is_pdf_like:
                 # If HTML page, attempt to find a PDF link within and download that instead
-                looks_like_html = ('html' in content_type) or (content.strip()[:15].lower().startswith(b'<!doctype html') or content.strip().lower().startswith(b'<html'))
+                looks_like_html = (content.strip()[:15].lower().startswith(b'<!doctype html') or content.strip().lower().startswith(b'<html'))
                 if looks_like_html:
                     pdf_from_html = self._extract_pdf_link_from_html_content(content, url)
                     if pdf_from_html:
@@ -344,6 +400,36 @@ class DownloadHandler:
         except Exception as e:
             logger.warning(f"Error validating PDF content: {e}")
             return False
+
+    def _download_with_retries_custom(self, url: str, extra_headers: Optional[dict] = None) -> Tuple[bool, Optional[bytes]]:
+        """
+        Same as _download_with_retries but allows passing extra headers per request.
+        """
+        headers = dict(self.session.headers)
+        if extra_headers:
+            headers.update(extra_headers)
+        for attempt in range(self.max_retries):
+            try:
+                logger.info(f"Download (custom headers) attempt {attempt + 1}/{self.max_retries}")
+                response = self.session.get(url, timeout=30, stream=True, headers=headers)
+                response.raise_for_status()
+                content = response.content
+                if content and len(content) > 0:
+                    return True, content
+                else:
+                    return False, None
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Custom header attempt {attempt + 1} failed: {e}")
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay * (2 ** attempt))
+                else:
+                    return False, None
+            except Exception:
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay)
+                else:
+                    return False, None
+        return False, None
     
     def _save_screenshot_for_debugging(self, screenshot_path: Path, game_name: str) -> None:
         """

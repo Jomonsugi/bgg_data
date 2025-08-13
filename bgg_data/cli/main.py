@@ -10,7 +10,7 @@ from typing import List, Optional
 from ..config import DATABASE_PATH, RULEBOOKS_DIR
 from ..database import BGGDatabase, Game
 from ..rulebooks import AgenticRulebookFetcher
-from ..rulebooks.utils import is_rulebook_already_downloaded
+from ..rulebooks.utils import is_rulebook_already_downloaded, extract_game_name_from_filename
 from ..logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -125,21 +125,46 @@ class BGGIntegration:
             db_stats = self.db.get_statistics()
             total_games = db_stats.get('total_games_in_db', 0)
             
-            # Count existing rulebooks (PDF and HTML)
-            pdf_count = len(list(self.rulebooks_dir.glob("*.pdf")))
-            html_count = len(list(self.rulebooks_dir.glob("*.html"))) + len(list(self.rulebooks_dir.glob("*.htm")))
-            existing_rulebooks_total = pdf_count + html_count
-            
-            # Calculate coverage (PDF + HTML)
+            # Build unique coverage by game name from filenames
+            pdf_files = list(self.rulebooks_dir.glob("*.pdf"))
+            html_files = list(self.rulebooks_dir.glob("*.html")) + list(self.rulebooks_dir.glob("*.htm"))
+
+            pdf_games = {extract_game_name_from_filename(p.name).lower() for p in pdf_files}
+            html_games_all = {extract_game_name_from_filename(h.name).lower() for h in html_files}
+            # HTML-only games (no PDF)
+            html_only_games = html_games_all - pdf_games
+
+            unique_with_rulebooks = len(pdf_games | html_games_all)
+            # Clamp to total_games
+            unique_with_rulebooks = min(unique_with_rulebooks, total_games)
+
+            existing_rulebooks_pdf = len(pdf_games)
+            existing_rulebooks_html = len(html_only_games)
+            existing_rulebooks_total = existing_rulebooks_pdf + existing_rulebooks_html
+
+            # Calculate coverage (unique games only)
             coverage_percentage = (existing_rulebooks_total / total_games * 100) if total_games > 0 else 0
+
+            # Duplicate files report (files beyond the first per game)
+            from collections import Counter
+            pdf_counts = Counter(extract_game_name_from_filename(p.name).lower() for p in pdf_files)
+            html_counts = Counter(extract_game_name_from_filename(h.name).lower() for h in html_files)
+            duplicate_pdf_files = sum(max(0, c - 1) for c in pdf_counts.values())
+            # For HTML, only consider duplicates among HTML-only games to avoid counting when a PDF also exists
+            html_only_counts = {name: cnt for name, cnt in html_counts.items() if name in html_only_games}
+            duplicate_html_files = sum(max(0, c - 1) for c in html_only_counts.values())
+            duplicate_total_files = duplicate_pdf_files + duplicate_html_files
             
             stats = {
                 'total_games_in_db': total_games,
-                'existing_rulebooks_pdf': pdf_count,
-                'existing_rulebooks_html': html_count,
+                'existing_rulebooks_pdf': existing_rulebooks_pdf,
+                'existing_rulebooks_html': existing_rulebooks_html,
                 'existing_rulebooks_total': existing_rulebooks_total,
-                'missing_rulebooks': total_games - existing_rulebooks_total,
-                'coverage_percentage': round(coverage_percentage, 1)
+                'missing_rulebooks': max(0, total_games - existing_rulebooks_total),
+                'coverage_percentage': round(coverage_percentage, 1),
+                'duplicate_pdf_files': duplicate_pdf_files,
+                'duplicate_html_files': duplicate_html_files,
+                'duplicate_total_files': duplicate_total_files,
             }
             
             return stats
@@ -161,6 +186,7 @@ def main():
         parser.add_argument("--rank-from", type=int, default=None, help="Inclusive lower bound rank (e.g., 6)")
         parser.add_argument("--rank-to", type=int, default=None, help="Inclusive upper bound rank (e.g., 10)")
         parser.add_argument("--screenshots", action="store_true", help="Save screenshots for debugging")
+        parser.add_argument("--list-missing", action="store_true", help="Only list games missing rulebooks and exit")
 
         args = parser.parse_args()
 
@@ -187,12 +213,29 @@ def main():
             print("   This will fetch real game data from the BGG API.")
             return
 
-        # Fetch rulebooks
+        # Fetch rulebooks or just list missing
+        games_all = integration.db.get_games(args.limit, args.rank_from, args.rank_to)
+        games = integration.filter_games_without_rulebooks(games_all)
+        if args.list_missing:
+            print("\n" + "="*60)
+            print("MISSING RULEBOOKS")
+            print("="*60)
+            if not games:
+                print("All games in the selected range have rulebooks.")
+            else:
+                for g in games:
+                    print(f"- {g.name}")
+                print(f"\nTotal missing: {len(games)}")
+            return
+
         print("\nStarting rulebook fetch...")
-        from ..rulebooks.agentic_fetcher import AgenticRulebookFetcher
-        fetcher = AgenticRulebookFetcher(save_screenshots=args.screenshots)
-        games = integration.db.get_games(args.limit, args.rank_from, args.rank_to)
-        results = fetcher.fetch_rulebooks_for_games(games, delay_between_games=3.0)
+        from ..rulebooks import RulebookOrchestrator
+        fetcher = RulebookOrchestrator(save_screenshots=args.screenshots)
+        if not games:
+            logger.info("No missing rulebooks detected for the selected range; nothing to do.")
+            results = []
+        else:
+            results = fetcher.fetch_rulebooks_for_games(games, delay_between_games=3.0)
 
         # Show results
         print("\n" + "="*60)
@@ -214,6 +257,11 @@ def main():
         print(f"Total games in database: {updated_stats.get('total_games_in_db', 0)}")
         print(f"Existing rulebooks: {updated_stats.get('existing_rulebooks_total', updated_stats.get('existing_rulebooks', 0))}")
         print(f"  - PDFs: {updated_stats.get('existing_rulebooks_pdf', 0)}  |  HTML: {updated_stats.get('existing_rulebooks_html', 0)}")
+        dup_pdf = updated_stats.get('duplicate_pdf_files', 0)
+        dup_html = updated_stats.get('duplicate_html_files', 0)
+        dup_total = updated_stats.get('duplicate_total_files', 0)
+        if dup_total:
+            print(f"  - Duplicate files (not counted in coverage): total {dup_total}  |  PDFs: {dup_pdf}  |  HTML: {dup_html}")
         print(f"Missing rulebooks: {updated_stats.get('missing_rulebooks', 0)}")
         print(f"Coverage: {updated_stats.get('coverage_percentage', 0)}%")
         print("="*60)

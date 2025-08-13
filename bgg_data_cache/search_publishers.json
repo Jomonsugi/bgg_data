@@ -1,0 +1,28 @@
+{
+  "eggertspiele": {
+    "cdn.1j1ju.com": {
+      "points": 105.0,
+      "success": 1.0
+    }
+  },
+  "czech games edition": {
+    "www.connexxion24.com": {
+      "points": 87.0,
+      "success": 0.0
+    },
+    "filemanager.czechgames.com": {
+      "points": 105.0,
+      "success": 1.0
+    }
+  },
+  "cephalofair games": {
+    "boardgamegeek.com": {
+      "points": 78.0,
+      "success": 0.0
+    },
+    "cephalofairgames.github.io": {
+      "points": 102.0,
+      "success": 1.0
+    }
+  }
+}

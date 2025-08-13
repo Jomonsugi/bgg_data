@@ -79,7 +79,8 @@ class FallbackStrategy:
         
         candidates = self.search_fallback.search_official_rulebook(
             context.game.name, 
-            publisher=context.game.publisher
+            publisher=context.game.publisher,
+            relaxed=True
         )
         
         if not candidates:
@@ -98,6 +99,12 @@ class FallbackStrategy:
             if success:
                 # LLM verification: Check if the file is official English rulebook
                 if self._verify_downloaded_file(context, file_path, url_cand):
+                    # Record success for the domain
+                    try:
+                        # On success, promote domain into known_publishers map for this publisher
+                        self.search_fallback.scorer.record_success(url_cand, context.game.publisher)
+                    except Exception:
+                        pass
                     return FetchResult(
                         game_name=context.game.name,
                         success=True,
@@ -111,7 +118,36 @@ class FallbackStrategy:
                     # Delete the unsuitable file
                     if file_path and Path(file_path).exists():
                         Path(file_path).unlink()
+                    # Record failure for the domain
+                    try:
+                        self.search_fallback.scorer.record_failure(url_cand, context.game.publisher)
+                    except Exception:
+                        pass
                     continue
+
+            # If candidate appears to be a BGG thread, open it and scan for PDF link once
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(url_cand)
+                if 'boardgamegeek.com' in parsed.netloc and '/thread/' in parsed.path:
+                    if context.web_handler.navigate_to_page(url_cand):
+                        pdf_url = context.web_handler.quick_html_check()
+                        if pdf_url:
+                            logger.info(f"Found PDF via BGG thread page: {pdf_url}")
+                            success2, filename2, file_path2 = context.download_handler.download_rulebook(
+                                pdf_url, context.game.name, context.save_screenshots, web_handler=context.web_handler
+                            )
+                            if success2 and self._verify_downloaded_file(context, file_path2, pdf_url):
+                                return FetchResult(
+                                    game_name=context.game.name,
+                                    success=True,
+                                    rulebook_url=pdf_url,
+                                    filename=filename2,
+                                    file_path=file_path2,
+                                    method="web_search_bgg_thread"
+                                )
+            except Exception:
+                pass
         
         logger.warning("All direct rulebook search candidates failed")
         return None
@@ -176,6 +212,27 @@ class FallbackStrategy:
         
         # If HTML check failed, try LLM vision analysis
         logger.info("HTML check failed on web search candidate, trying LLM vision analysis...")
+        # Attempt to capture direct PDF responses via network (covers JS/new-tab downloads)
+        try:
+            url_net, content = context.web_handler.capture_pdf_via_network(wait_seconds=3.0)
+            if url_net and content and len(content) > 0:
+                # Save through download handler path by short-circuiting retries
+                success, filename, file_path = context.download_handler.download_rulebook(
+                    url_net, context.game.name, context.save_screenshots, web_handler=context.web_handler
+                )
+                if success:
+                    if self._verify_downloaded_file(context, file_path, url_net):
+                        return FetchResult(
+                            game_name=context.game.name,
+                            success=True,
+                            rulebook_url=url_net,
+                            filename=filename,
+                            file_path=file_path,
+                            method="web_search_network_capture"
+                        )
+        except Exception:
+            pass
+
         return self._try_llm_vision_on_candidate(context, candidate_url, "web_search_official_website_llm")
     
     def _try_llm_vision_on_candidate(self, context: FallbackContext, candidate_url: str, method: str) -> Optional[FetchResult]:
@@ -195,8 +252,10 @@ class FallbackStrategy:
             return None
         
         # Use LLM to extract rulebook URL from candidate website
+        cands = context.web_handler.collect_candidate_links(max_candidates=6)
+        elem_shots = context.web_handler.take_element_screenshots_for_candidates(cands, max_images=2)
         llm_success, llm_result, confidence = context.llm_handler.extract_rulebook_url(
-            screenshot_bytes, context.game.name
+            screenshot_bytes, context.game.name, candidates=cands, extra_images=elem_shots
         )
         
         if not llm_success:
@@ -205,9 +264,17 @@ class FallbackStrategy:
         
         logger.info(f"LLM vision successful on web search candidate, found: {llm_result}")
         
+        # Resolve relative URL if necessary
+        try:
+            from urllib.parse import urljoin
+            current = context.web_handler.driver.current_url if hasattr(context.web_handler, 'driver') else candidate_url
+            resolved_url = llm_result if (llm_result and llm_result.lower().startswith(('http://', 'https://'))) else urljoin(current, llm_result)
+        except Exception:
+            resolved_url = llm_result
+        
         # Try to download the rulebook
         success, filename, file_path = context.download_handler.download_rulebook(
-            llm_result, context.game.name, context.save_screenshots, web_handler=context.web_handler
+            resolved_url, context.game.name, context.save_screenshots, web_handler=context.web_handler
         )
         
         if not success:
@@ -216,15 +283,23 @@ class FallbackStrategy:
         
         # Verify the downloaded file (require both official AND English)
         if self._verify_downloaded_file(context, file_path, llm_result):
+            try:
+                self.search_fallback.scorer.record_success(resolved_url)
+            except Exception:
+                pass
             return FetchResult(
                 game_name=context.game.name,
                 success=True,
-                rulebook_url=llm_result,
+                rulebook_url=resolved_url,
                 filename=filename,
                 file_path=file_path,
                 method=method
             )
         
+        try:
+            self.search_fallback.scorer.record_failure(resolved_url)
+        except Exception:
+            pass
         return None
     
     def _handle_html_check_success(self, context: FallbackContext, pdf_url: str, method: str) -> Optional[FetchResult]:
@@ -250,7 +325,12 @@ class FallbackStrategy:
                 file_path=file_path,
                 method=method
             )
-        
+        # If HTML saved and not verified, remove it so we don't keep non-official HTML
+        try:
+            if file_path and Path(file_path).exists():
+                Path(file_path).unlink()
+        except Exception:
+            pass
         return None
     
     def _verify_downloaded_file(self, context: FallbackContext, file_path: str, source_url: str) -> bool:

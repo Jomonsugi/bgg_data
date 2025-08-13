@@ -4,7 +4,7 @@ LLM handler for Together.ai integration in the rulebook fetcher.
 
 import base64
 import logging
-from typing import Optional, Tuple, Literal
+from typing import Optional, Tuple, Literal, List, Dict
 from pathlib import Path
 import io
 from PIL import Image
@@ -124,41 +124,42 @@ class LLMHandler:
             
             # Calculate target dimensions while maintaining aspect ratio
             width, height = image.size
-            aspect_ratio = width / height
+            aspect_ratio = width / height if height else 1.0
             
-            # Start with current dimensions and reduce gradually
+            # Convert to RGB for JPEG compatibility
+            try:
+                image = image.convert('RGB')
+            except Exception:
+                pass
+            
+            # Start with current dimensions and reduce gradually, using JPEG compression
             target_width = width
             target_height = height
+            quality = 85
             
             while True:
-                # Calculate size with current dimensions
                 temp_image = image.resize((target_width, target_height), Image.Resampling.LANCZOS)
                 temp_bytes = io.BytesIO()
-                temp_image.save(temp_bytes, format='PNG', optimize=True)
+                temp_image.save(temp_bytes, format='JPEG', quality=quality, optimize=True, progressive=True)
                 temp_size_mb = len(temp_bytes.getvalue()) / (1024 * 1024)
                 
-                if temp_size_mb <= max_size_mb or target_width < 800:  # Don't go below 800px width
-                    break
+                if temp_size_mb <= max_size_mb or (target_width < 800 and quality <= 70):
+                    optimized_bytes = temp_bytes.getvalue()
+                    logger.info(f"Image optimized to {temp_size_mb:.2f}MB at {target_width}x{target_height}, q={quality}")
+                    return optimized_bytes
                 
-                # Reduce dimensions by 10%
-                target_width = int(target_width * 0.9)
-                target_height = int(target_width / aspect_ratio)
-            
-            # Apply final optimization
-            optimized_image = image.resize((target_width, target_height), Image.Resampling.LANCZOS)
-            optimized_bytes = io.BytesIO()
-            optimized_image.save(optimized_bytes, format='PNG', optimize=True)
-            
-            final_size_mb = len(optimized_bytes.getvalue()) / (1024 * 1024)
-            logger.info(f"Image optimized to {final_size_mb:.2f}MB ({target_width}x{target_height})")
-            
-            return optimized_bytes.getvalue()
+                # Prefer reducing quality a bit before resizing further
+                if quality > 70:
+                    quality -= 5
+                else:
+                    target_width = int(target_width * 0.9)
+                    target_height = max(1, int(target_width / aspect_ratio))
             
         except Exception as e:
             logger.warning(f"Error optimizing image, using original: {e}")
             return image_bytes
     
-    def extract_rulebook_url(self, image_bytes: bytes, game_name: str = "") -> Tuple[bool, Optional[str], Optional[str]]:
+    def extract_rulebook_url(self, image_bytes: bytes, game_name: str = "", candidates: Optional[List[Dict[str, str]]] = None, extra_images: Optional[List[bytes]] = None) -> Tuple[bool, Optional[str], Optional[str]]:
         """
         Extract rulebook URL from a webpage screenshot using Together.ai.
         
@@ -173,7 +174,7 @@ class LLMHandler:
             backend_name = "MLX" if VISION_BACKEND == "mlx" else "Together.ai"
             logger.info(f"Extracting rulebook URL for '{game_name}' using {backend_name}...")
             
-            # Optimize image to reduce costs
+            # Optimize image to reduce costs (JPEG compression)
             optimized_bytes = self._optimize_image(image_bytes)
             
             if VISION_BACKEND == "mlx":
@@ -181,7 +182,11 @@ class LLMHandler:
                 import tempfile
                 import subprocess
                 import sys
-                prompt = f"Game: {game_name}\n\n{RULEBOOK_EXTRACTION_PROMPT}"
+                cand_text = ""
+                if candidates:
+                    preview = "\n".join([f"- {c.get('text','')} — {c.get('href','')}" for c in candidates[:8]])
+                    cand_text = f"\n\nCandidates (choose one if suitable):\n{preview}\n\n"
+                prompt = f"Game: {game_name}\n\n{RULEBOOK_EXTRACTION_PROMPT}{cand_text}"
                 with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as tmp:
                     tmp.write(optimized_bytes)
                     tmp.flush()
@@ -213,20 +218,36 @@ class LLMHandler:
             else:
                 # Together.ai path
                 encoded_image = self._encode_image(optimized_bytes)
-                prompt = f"Game: {game_name}\n\n{RULEBOOK_EXTRACTION_PROMPT}"
-                messages = [{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encoded_image}"}},
-                    ]
-                }]
-                response = self.client.chat.completions.create(
-                    model=self.model_name,
-                    messages=messages,
-                    max_tokens=200,
-                    temperature=0.1,
-                )
+                cand_text = ""
+                if candidates:
+                    preview = "\n".join([f"- {c.get('text','')} — {c.get('href','')}" for c in candidates[:8]])
+                    cand_text = f"\n\nCandidates (choose one URL if it matches the official rulebook, otherwise ignore):\n{preview}\n\nReturn only a single URL."
+                prompt = f"Game: {game_name}\n\n{RULEBOOK_EXTRACTION_PROMPT}{cand_text}"
+                content_items = [{"type": "text", "text": prompt}]
+                content_items.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded_image}"}})
+                if extra_images:
+                    for img in extra_images[:2]:
+                        enc = self._encode_image(self._optimize_image(img))
+                        content_items.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{enc}"}})
+                messages = [{"role": "user", "content": content_items}]
+                # Simple retry for transient 5xx
+                response = None
+                last_err: Optional[Exception] = None
+                for _ in range(2):
+                    try:
+                        response = self.client.chat.completions.create(
+                            model=self.model_name,
+                            messages=messages,
+                            max_tokens=200,
+                            temperature=0.1,
+                        )
+                        break
+                    except Exception as e:
+                        last_err = e
+                        import time as _t
+                        _t.sleep(0.6)
+                if response is None:
+                    raise last_err or RuntimeError("LLM request failed")
                 if response.choices and len(response.choices) > 0:
                     content = response.choices[0].message.content.strip()
                     if content and not any(phrase in content for phrase in ["None Found", "none found", "no rulebook download link", "no download"]):
@@ -240,6 +261,44 @@ class LLMHandler:
         except Exception as e:
             error_msg = f"Error during LLM extraction: {e}"
             logger.error(error_msg)
+            # Optional auto-fallback to MLX if available
+            try:
+                if VISION_BACKEND == "together":
+                    logger.info("Falling back to MLX vision backend after Together.ai error")
+                    # emulate MLX branch quickly
+                    # Optimize again to ensure reasonable size
+                    optimized_bytes = self._optimize_image(image_bytes)
+                    import tempfile, subprocess, sys
+                    prompt = f"Game: {game_name}\n\n{RULEBOOK_EXTRACTION_PROMPT}"
+                    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=True) as tmp:
+                        tmp.write(optimized_bytes)
+                        tmp.flush()
+                        cmd = [
+                            sys.executable,
+                            "-m",
+                            "mlx_vlm.generate",
+                            "--model",
+                            str(self._mlx_model_id or MLX_VLM_MODEL),
+                            "--max-tokens",
+                            "120",
+                            "--temp",
+                            "0.0",
+                            "--images",
+                            tmp.name,
+                            "--prompt",
+                            prompt,
+                        ]
+                        try:
+                            proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
+                            content = (proc.stdout or proc.stderr or "").strip()
+                            if content and "http" in content.lower():
+                                url = self._clean_url_response(content)
+                                if url:
+                                    return True, url, "medium"
+                        except Exception:
+                            pass
+            except Exception:
+                pass
             return False, error_msg, "low"
     
     def _clean_url_response(self, response: str) -> Optional[str]:
@@ -285,12 +344,14 @@ class LLMHandler:
                 if cleaned.endswith(suffix):
                     cleaned = cleaned[:-len(suffix)].strip()
             
-            # Basic URL validation
+            # Basic absolute URL validation
             if cleaned.startswith(('http://', 'https://')):
                 return cleaned
             
-            # If it doesn't start with http, it might be a relative URL
-            # For now, we'll require full URLs
+            # Allow relative URLs; absolute resolution will be done by caller
+            if cleaned.startswith(('/', './')) or cleaned.startswith('../'):
+                return cleaned
+            
             logger.warning(f"Response doesn't appear to be a valid URL: {cleaned}")
             return None
             
@@ -313,12 +374,26 @@ class LLMHandler:
                 logger.error(f"MLX VLM not available: {e}")
                 return False
         try:
+            # Use a tiny 1x1 image to validate multimodal path for vision models
+            import io as _io
+            from PIL import Image as _Image
+            tiny = _Image.new('RGB', (1, 1), (255, 255, 255))
+            buf = _io.BytesIO()
+            tiny.save(buf, format='JPEG')
+            encoded = base64.b64encode(buf.getvalue()).decode('utf-8')
+            messages = [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Ping"},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded}"}},
+                ]
+            }]
             response = self.client.chat.completions.create(
                 model=self.model_name,
-                messages=[{"role": "user", "content": "Hello"}],
-                max_tokens=10
+                messages=messages,
+                max_tokens=5
             )
-            return bool(response.choices)
+            return bool(getattr(response, 'choices', None))
         except Exception as e:
             logger.error(f"Together.ai connection test failed: {e}")
             return False
@@ -363,29 +438,49 @@ class LLMHandler:
                 sample_text = "\n\n".join(text_parts)
                 if not sample_text.strip():
                     sample_text = "(No extractable text; may be image-based PDF)"
+                    # Optional: basic OCR fallback for image-based PDFs
+                    try:
+                        import pytesseract
+                        from pdf2image import convert_from_path
+                        images = convert_from_path(str(file_path), first_page=1, last_page=min(2, total_pages))
+                        ocr_text = []
+                        for img in images:
+                            ocr_text.append(pytesseract.image_to_string(img) or "")
+                        sample_text = ("\n".join(ocr_text)).strip() or sample_text
+                        logger.info(f"OCR extracted {len(sample_text)} characters of text")
+                    except Exception as e:
+                        logger.debug(f"OCR fallback unavailable/failed: {e}")
                     
             elif file_path.suffix.lower() in ['.html', '.htm']:
                 file_type = "HTML"
-                # Extract text from HTML file
+                # Extract text and structural cues from HTML file
                 with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                     html_content = f.read()
-                
-                # Use BeautifulSoup to extract clean text
+
+                # Use BeautifulSoup to extract clean text and metadata
                 from bs4 import BeautifulSoup
                 soup = BeautifulSoup(html_content, 'html.parser')
-                
+
+                # Title and headers for structural cues
+                doc_title = (soup.title.string if soup.title and soup.title.string else "").strip()
+                headers = [h.get_text(strip=True) for h in soup.find_all(['h1', 'h2'])]
+                headers_text = " | ".join(headers[:10])
+
+                # Count images as a proxy for designed documents (vs plain text FAQ)
+                num_images = len(soup.find_all('img'))
+
                 # Remove script and style elements
                 for script in soup(["script", "style"]):
                     script.decompose()
-                
+
                 # Get text content
                 text = soup.get_text()
-                
+
                 # Clean up whitespace
                 lines = (line.strip() for line in text.splitlines())
                 chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
                 sample_text = ' '.join(chunk for chunk in chunks if chunk)
-                
+
                 # Limit size for LLM
                 if len(sample_text) > 6000:
                     sample_text = sample_text[:6000] + "..."
@@ -395,27 +490,71 @@ class LLMHandler:
                 
             logger.info(f"Extracted {len(sample_text)} characters of text for LLM analysis")
 
+            # Provide extra structural context for HTML to steer the model
+            extra_context = ""
+            try:
+                if file_type == "HTML":
+                    title_txt = locals().get("doc_title", "")
+                    headers_txt = locals().get("headers_text", "")
+                    num_imgs = locals().get("num_images", 0)
+                    extra_context = (
+                        f"\nTitle: {title_txt}\n"
+                        f"Top headers: {headers_txt}\n"
+                        f"Image count: {num_imgs}\n"
+                    )
+            except Exception:
+                pass
+
             prompt = f"""
 Look at this text from a {file_type} file for the board game '{game_name}':
 
 {sample_text[:4000]}
+{extra_context}
 
-Answer these 2 simple questions:
+Answer these 2 questions strictly:
 1. Is this text in English? (yes/no)
-2. Does this look like an official game rulebook? (yes/no)
+2. Is this the official game rulebook document? (yes/no)
 
-Respond as JSON: {{"is_english": true|false, "is_official": true|false}}
+Important instructions:
+- FAQs, errata, rules reference, quick reference, quickstart/learn-to-play guides, player aids, blog posts, news posts, product pages, and forum/discussion pages are NOT the rulebook.
+- If the title or headers contain words like "FAQ", "Errata", "Reference", "Quick", "Guide", treat it as NOT a rulebook.
+- An official HTML rulebook usually contains structured sections like Components, Setup, Gameplay/Turn Order/Phases, and often includes images or diagrams.
+- Only answer "yes" for official if it clearly appears to be the rulebook itself.
 
-Note: Forum posts, reviews, and discussions are NOT rulebooks.
+Respond as JSON: {"is_english": true|false, "is_official": true|false}
 """
 
             if VISION_BACKEND == "mlx":
                 # Heuristic assessment without external API
                 lower = sample_text.lower()
-                english_cues = ["the ", "setup", "components", "players", "round", "phase", "victory"]
-                non_english_cues = ["spieler", "regeln", "regle", "reglas", "spiel", "punkte"]
+                english_cues = [" the ", "setup", "components", "players", "round", "phase", "victory", "turn order", "objective"]
+                non_english_cues = ["spieler", "regeln", "regle", "reglas", "spiel", "punkte", "objet", "objetivo"]
                 is_english = sum(tok in lower for tok in english_cues) >= 2 and sum(tok in lower for tok in non_english_cues) == 0
-                is_official = ("rulebook" in lower) or ("rules" in lower and "game" in lower)
+
+                # Stricter HTML-specific rulebook heuristics
+                is_official = False
+                if file_type == "HTML":
+                    title_l = (locals().get("doc_title", "") or "").lower()
+                    headers_l = (locals().get("headers_text", "") or "").lower()
+                    num_imgs = int(locals().get("num_images", 0) or 0)
+
+                    # Immediate exclusions
+                    exclusion_terms = ["faq", "errata", "reference", "quickstart", "quick start", "learn to play", "player aid", "guide"]
+                    has_exclusion = any(term in title_l or term in headers_l for term in exclusion_terms)
+
+                    # Positive structural cues
+                    section_cues = ["setup", "components", "gameplay", "turn order", "phases", "objective"]
+                    has_sections = sum(cue in lower for cue in section_cues) >= 2
+                    has_rulebook_word = ("rulebook" in title_l) or ("rulebook" in headers_l) or ("rulebook" in lower)
+
+                    # Require at least some imagery to avoid plain-text FAQs
+                    has_images = num_imgs >= 2
+
+                    is_official = (not has_exclusion) and has_sections and has_images and (has_rulebook_word or ("rules" in headers_l or "rules" in title_l))
+                else:
+                    # PDF heuristic
+                    is_official = ("rulebook" in lower) or ("rules" in lower and "game" in lower)
+
                 return is_official, is_english, "heuristic"
             else:
                 logger.info("Sending PDF assessment request to LLM...")

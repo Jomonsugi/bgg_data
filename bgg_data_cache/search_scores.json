@@ -1,0 +1,73 @@
+{
+  "cdn.1j1ju.com": {
+    "success": 1.0,
+    "failure": 0.0,
+    "n": 1.0,
+    "last_ts": 1755061902.940238,
+    "by_publisher": {
+      "eggertspiele": {
+        "success": 1.0,
+        "failure": 0.0,
+        "n": 1.0,
+        "last_ts": 1755061902.940238
+      }
+    }
+  },
+  "_total_n": 9,
+  "www.connexxion24.com": {
+    "success": 0.0,
+    "failure": 1.0,
+    "n": 1.0,
+    "last_ts": 1755062091.298039,
+    "by_publisher": {
+      "czech games edition": {
+        "success": 0.0,
+        "failure": 1.0,
+        "n": 1.0,
+        "last_ts": 1755062091.298039
+      }
+    }
+  },
+  "filemanager.czechgames.com": {
+    "success": 1.0,
+    "failure": 0.0,
+    "n": 1.0,
+    "last_ts": 1755062092.909832,
+    "by_publisher": {
+      "czech games edition": {
+        "success": 1.0,
+        "failure": 0.0,
+        "n": 1.0,
+        "last_ts": 1755062092.909832
+      }
+    }
+  },
+  "boardgamegeek.com": {
+    "success": 0.0,
+    "failure": 3.9979688822987947,
+    "n": 3.9979688822987947,
+    "last_ts": 1755066104.587392,
+    "by_publisher": {
+      "cephalofair games": {
+        "success": 0.0,
+        "failure": 3.9979688822987947,
+        "n": 3.9979688822987947,
+        "last_ts": 1755066104.587392
+      }
+    }
+  },
+  "cephalofairgames.github.io": {
+    "success": 0.9998535107202781,
+    "failure": 1.0,
+    "n": 1.999853510720278,
+    "last_ts": 1755066104.679384,
+    "by_publisher": {
+      "cephalofair games": {
+        "success": 0.9998535107202781,
+        "failure": 1.0,
+        "n": 1.999853510720278,
+        "last_ts": 1755066104.679384
+      }
+    }
+  }
+}

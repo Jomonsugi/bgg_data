@@ -11,13 +11,13 @@ __author__ = "BGG Data Team"
 
 # Main package imports for convenience
 from .database import BGGDatabase
-from .rulebooks import AgenticRulebookFetcher
+from .rulebooks import RulebookOrchestrator
 from .models import Game, FetchResult
 from .logging_config import setup_logging
 
 __all__ = [
     "BGGDatabase", 
-    "AgenticRulebookFetcher",
+    "RulebookOrchestrator",
     "Game",
     "FetchResult", 
     "setup_logging",
