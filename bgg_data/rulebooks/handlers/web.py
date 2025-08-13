@@ -738,6 +738,16 @@ class WebPageHandler:
                 return local_candidates
 
             candidates = collect_pdf_candidates_in_context()
+            # Strongly prefer likely-English candidates; if any candidate looks non-English, keep but demote
+            if candidates:
+                def english_bias(score_href: tuple) -> tuple:
+                    score, href = score_href
+                    h = (href or '').lower()
+                    penalty_tags = ['_fr', '-fr', '/fr/', '_de', '-de', '/de/', '_es', '-es', '/es/', '_it', '-it', '/it/']
+                    if any(tag in h for tag in penalty_tags):
+                        score -= 20
+                    return (score, href)
+                candidates = [english_bias(ch) for ch in candidates]
 
             # Also consider icon-only or JS-triggered downloads
             icon_candidates = self.driver.find_elements(By.XPATH,

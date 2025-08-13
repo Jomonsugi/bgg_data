@@ -52,8 +52,9 @@ class LLMHandler:
             self._initialize_mlx()
         else:
             if not self.api_key:
-                raise ValueError("Together.ai API key is required. Set TOGETHER_API_KEY environment variable.")
-            self._initialize_client()
+                logger.warning("TOGETHER_API_KEY not set; skipping Together client init. Set VISION_BACKEND=mlx to suppress this.")
+            else:
+                self._initialize_client()
     
     def _initialize_client(self) -> None:
         """Initialize the Together.ai client."""
@@ -521,39 +522,86 @@ Important instructions:
 - An official HTML rulebook usually contains structured sections like Components, Setup, Gameplay/Turn Order/Phases, and often includes images or diagrams.
 - Only answer "yes" for official if it clearly appears to be the rulebook itself.
 
-Respond as JSON: {"is_english": true|false, "is_official": true|false}
+Respond ONLY with a valid JSON object with two boolean fields.
+Example: {{"is_english": true, "is_official": false}}
 """
 
             if VISION_BACKEND == "mlx":
-                # Heuristic assessment without external API
+                # Lightweight vision check for PDFs: render first page → ask MLX VLM a simple JSON yes/no
+                if file_type == "PDF":
+                    try:
+                        import tempfile
+                        import subprocess
+                        from pdf2image import convert_from_path
+                        images = convert_from_path(str(file_path), first_page=1, last_page=1, fmt="png")
+                        if images:
+                            with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as tmp:
+                                images[0].save(tmp.name, format="PNG")
+                                prompt_img = (
+                                    "You will see the first page of a board game document.\n"
+                                    f"Game: {game_name}\n\n"
+                                    "Answer strictly in JSON with two booleans: {\"is_english\": <bool>, \"is_official\": <bool>}\n"
+                                    "Guidance: An official rulebook usually has sections like Components, Setup, How to Play/Rules,\n"
+                                    "publisher branding, and page numbers. Exclude FAQs, errata, product pages, and marketing flyers.\n"
+                                )
+                                cmd = [
+                                    __import__("sys").executable,
+                                    "-m",
+                                    "mlx_vlm.generate",
+                                    "--model",
+                                    str(self._mlx_model_id),
+                                    "--max-tokens",
+                                    "60",
+                                    "--temp",
+                                    "0.0",
+                                    "--images",
+                                    tmp.name,
+                                    "--prompt",
+                                    prompt_img,
+                                ]
+                                proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
+                                content = (proc.stdout or proc.stderr or "").strip()
+                                try:
+                                    import json as _json
+                                    # Extract first JSON object found in output
+                                    start = content.find("{")
+                                    end = content.find("}", start) + 1 if start != -1 else -1
+                                    if start != -1 and end != -1:
+                                        data = _json.loads(content[start:end])
+                                        ans_off = bool(data.get("is_official", False))
+                                        ans_en = bool(data.get("is_english", False))
+                                        return ans_off, ans_en, "mlx_vision_pdf"
+                                except Exception:
+                                    pass
+                    except Exception:
+                        # Fall through to heuristic if vision path fails
+                        pass
+
+                # Heuristic assessment (used for HTML or PDF fallback)
                 lower = sample_text.lower()
                 english_cues = [" the ", "setup", "components", "players", "round", "phase", "victory", "turn order", "objective"]
                 non_english_cues = ["spieler", "regeln", "regle", "reglas", "spiel", "punkte", "objet", "objetivo"]
                 is_english = sum(tok in lower for tok in english_cues) >= 2 and sum(tok in lower for tok in non_english_cues) == 0
 
-                # Stricter HTML-specific rulebook heuristics
                 is_official = False
                 if file_type == "HTML":
                     title_l = (locals().get("doc_title", "") or "").lower()
                     headers_l = (locals().get("headers_text", "") or "").lower()
                     num_imgs = int(locals().get("num_images", 0) or 0)
 
-                    # Immediate exclusions
                     exclusion_terms = ["faq", "errata", "reference", "quickstart", "quick start", "learn to play", "player aid", "guide"]
                     has_exclusion = any(term in title_l or term in headers_l for term in exclusion_terms)
 
-                    # Positive structural cues
                     section_cues = ["setup", "components", "gameplay", "turn order", "phases", "objective"]
                     has_sections = sum(cue in lower for cue in section_cues) >= 2
-                    has_rulebook_word = ("rulebook" in title_l) or ("rulebook" in headers_l) or ("rulebook" in lower)
-
-                    # Require at least some imagery to avoid plain-text FAQs
+                    has_rulebook_word = ("rulebook" in title_l) or ("rulebook" in headers_l) or ("rulebook" in lower) or ("rules" in headers_l) or ("rules" in title_l)
                     has_images = num_imgs >= 2
 
-                    is_official = (not has_exclusion) and has_sections and has_images and (has_rulebook_word or ("rules" in headers_l or "rules" in title_l))
+                    is_official = (not has_exclusion) and has_sections and (has_rulebook_word or has_images)
                 else:
-                    # PDF heuristic
-                    is_official = ("rulebook" in lower) or ("rules" in lower and "game" in lower)
+                    # Relaxed PDF heuristic
+                    cues = ["setup", "components", "rules", "game setup", "gameplay", "round", "turn", "victory", "objective"]
+                    is_official = sum(c in lower for c in cues) >= 2
 
                 return is_official, is_english, "heuristic"
             else:

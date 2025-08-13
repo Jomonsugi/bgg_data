@@ -43,6 +43,11 @@ def extract_game_name_from_filename(filename: str) -> str:
     # Remove file extension
     name_without_ext = filename.rsplit('.', 1)[0]
     
+    # Handle optional id segment like _123456 before _rules
+    m = re.match(r"^(.*)_\d+_(rules|rulebook|manual|instructions)$", name_without_ext, flags=re.IGNORECASE)
+    if m:
+        return m.group(1)
+    
     # Remove common suffixes
     suffixes_to_remove = ['_rules', '_rulebook', '_manual', '_instructions', '_spanish', '_german', '_french']
     for suffix in suffixes_to_remove:
@@ -51,7 +56,7 @@ def extract_game_name_from_filename(filename: str) -> str:
     
     return name_without_ext
 
-def is_rulebook_already_downloaded(game_name: str, rulebooks_dir: Path) -> bool:
+def is_rulebook_already_downloaded(game_name: str, rulebooks_dir: Path, game_id: Optional[str] = None) -> bool:
     """
     Check if a rulebook for the given game already exists.
     Uses exact filename matching to avoid false positives.
@@ -68,12 +73,19 @@ def is_rulebook_already_downloaded(game_name: str, rulebooks_dir: Path) -> bool:
     
     # Create expected filename patterns for this specific game
     sanitized_name = sanitize_filename(game_name.replace(' ', '-').replace(':', ''))
-    expected_patterns = [
+    # Prefer id-appended filenames when id is available
+    expected_patterns = []
+    if game_id:
+        expected_patterns.extend([
+            f"{sanitized_name}_{game_id}_rules.pdf",
+            f"{sanitized_name}_{game_id}_rules.html",
+        ])
+    expected_patterns.extend([
         f"{sanitized_name}_rules.pdf",
         f"{sanitized_name}_rules.html",
-        f"{sanitized_name}_rulebook.pdf", 
-        f"{sanitized_name}_manual.pdf"
-    ]
+        f"{sanitized_name}_rulebook.pdf",
+        f"{sanitized_name}_manual.pdf",
+    ])
     
     # Check for exact matches only
     for pattern in expected_patterns:
@@ -152,7 +164,7 @@ def sanitize_filename(filename: str) -> str:
     
     return filename
 
-def create_rulebook_filename(game_name: str, url: str) -> str:
+def create_rulebook_filename(game_name: str, url: str, game_id: Optional[str] = None) -> str:
     """
     Create a standardized filename for a rulebook.
     
@@ -169,6 +181,9 @@ def create_rulebook_filename(game_name: str, url: str) -> str:
     # Determine extension from URL
     extension = 'pdf' if '.pdf' in url.lower() else 'html'
     
+    # Append BGG id when provided (before _rules)
+    if game_id:
+        return f"{clean_name}_{game_id}_rules.{extension}"
     return f"{clean_name}_rules.{extension}"
 
 
@@ -213,7 +228,7 @@ def is_likely_english(url: str, text: str = "") -> bool:
     # Default unknown to True when nothing indicates non-English
     return True
 
-def is_rulebook_already_downloaded(game_name: str, rulebooks_dir: Path) -> bool:
+def is_rulebook_already_downloaded(game_name: str, rulebooks_dir: Path, game_id: Optional[str] = None) -> bool:
     """
     Check if a rulebook for the given game already exists.
     Uses exact filename matching to avoid false positives.
@@ -230,12 +245,18 @@ def is_rulebook_already_downloaded(game_name: str, rulebooks_dir: Path) -> bool:
     
     # Create expected filename patterns for this specific game
     sanitized_name = sanitize_filename(game_name.replace(' ', '-').replace(':', ''))
-    expected_patterns = [
+    expected_patterns = []
+    if game_id:
+        expected_patterns.extend([
+            f"{sanitized_name}_{game_id}_rules.pdf",
+            f"{sanitized_name}_{game_id}_rules.html",
+        ])
+    expected_patterns.extend([
         f"{sanitized_name}_rules.pdf",
         f"{sanitized_name}_rules.html",
-        f"{sanitized_name}_rulebook.pdf", 
-        f"{sanitized_name}_manual.pdf"
-    ]
+        f"{sanitized_name}_rulebook.pdf",
+        f"{sanitized_name}_manual.pdf",
+    ])
     
     # Check for exact matches only
     for pattern in expected_patterns:

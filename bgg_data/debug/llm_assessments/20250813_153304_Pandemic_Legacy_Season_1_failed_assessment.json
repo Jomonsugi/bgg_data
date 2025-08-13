@@ -1,0 +1,13 @@
+{
+  "timestamp": "20250813_153304",
+  "game_name": "Pandemic Legacy: Season 1",
+  "file_path": "/Users/micahshanks/Dev/bgg_data/rulebooks/Pandemic-Legacy-Season-1_161936_rules.pdf",
+  "source_url": "https://media.shopmyexchange.com/is/content/aafes/aafes/media/ecom/assets/pdfs/nofearact2025.pdf",
+  "llm_assessment": {
+    "is_official": false,
+    "is_english": false,
+    "rationale": "heuristic"
+  },
+  "screenshot_path": "bgg_data/debug/llm_assessments/20250813_153304_Pandemic_Legacy_Season_1_failed_assessment.png",
+  "current_page_url": "https://www.shopmyexchange.com/zman-games-pandemic-legacy-season-1--red-dsco1180668138/DSCO1194327239"
+}

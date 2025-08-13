@@ -1,0 +1,13 @@
+{
+  "timestamp": "20250813_145708",
+  "game_name": "Brass: Birmingham",
+  "file_path": "/Users/micahshanks/Dev/bgg_data/rulebooks/Brass-Birmingham_224517_rules.pdf",
+  "source_url": "http://files.roxley.com/Brass-Birmingham-Rulebook-FR-2018.07.11.pdf",
+  "llm_assessment": {
+    "is_official": false,
+    "is_english": false,
+    "rationale": "heuristic"
+  },
+  "screenshot_path": "bgg_data/debug/llm_assessments/20250813_145708_Brass_Birmingham_failed_assessment.png",
+  "current_page_url": "https://roxley.com/products/brass-birmingham-deluxe-edition?srsltid=AfmBOooG68D1YToQgiSOULIadCzi6I-nYPpY8cgYkgeKBJc-ahNJ_I3T"
+}

@@ -1,0 +1,13 @@
+{
+  "timestamp": "20250813_153752",
+  "game_name": "Pandemic Legacy: Season 1",
+  "file_path": "/Users/micahshanks/Dev/bgg_data/rulebooks/Pandemic-Legacy-Season-1_161936_rules.pdf",
+  "source_url": "https://cdn.svc.asmodee.net/production-zman/uploads/2024/09/Legacy-Season-0-Rulebook.pdf",
+  "llm_assessment": {
+    "is_official": false,
+    "is_english": false,
+    "rationale": "Error assessing PDF: PyCryptodome is required for AES algorithm"
+  },
+  "screenshot_path": "bgg_data/debug/llm_assessments/20250813_153752_Pandemic_Legacy_Season_1_failed_assessment.png",
+  "current_page_url": "https://www.zmangames.com/game/pandemic-legacy-season-0/"
+}

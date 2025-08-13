@@ -1,9 +1,9 @@
 {
   "cdn.1j1ju.com": {
-    "success": 1.0,
+    "success": 0.9867365568789378,
     "failure": 0.0,
-    "n": 1.0,
-    "last_ts": 1755061902.940238,
+    "n": 0.9867365568789378,
+    "last_ts": 1755111832.987849,
     "by_publisher": {
       "eggertspiele": {
         "success": 1.0,
@@ -13,7 +13,7 @@
       }
     }
   },
-  "_total_n": 9,
+  "_total_n": 51,
   "www.connexxion24.com": {
     "success": 0.0,
     "failure": 1.0,
@@ -44,9 +44,9 @@
   },
   "boardgamegeek.com": {
     "success": 0.0,
-    "failure": 3.9979688822987947,
-    "n": 3.9979688822987947,
-    "last_ts": 1755066104.587392,
+    "failure": 3.9428839556134134,
+    "n": 3.9428839556134134,
+    "last_ts": 1755117986.039885,
     "by_publisher": {
       "cephalofair games": {
         "success": 0.0,
@@ -67,6 +67,90 @@
         "failure": 1.0,
         "n": 1.999853510720278,
         "last_ts": 1755066104.679384
+      }
+    }
+  },
+  "files.roxley.com": {
+    "success": 0.0,
+    "failure": 4.999180066849631,
+    "n": 4.999180066849631,
+    "last_ts": 1755111951.1579452,
+    "by_publisher": {
+      "roxley": {
+        "success": 0.0,
+        "failure": 4.999180066849631,
+        "n": 4.999180066849631,
+        "last_ts": 1755111951.1579452
+      }
+    }
+  },
+  "www.orderofgamers.com": {
+    "success": 0.0,
+    "failure": 4.999179788889476,
+    "n": 4.999179788889476,
+    "last_ts": 1755111953.715847,
+    "by_publisher": {
+      "roxley": {
+        "success": 0.0,
+        "failure": 4.999179788889476,
+        "n": 4.999179788889476,
+        "last_ts": 1755111953.715847
+      }
+    }
+  },
+  "www.goblins.net": {
+    "success": 0.0,
+    "failure": 4.999176190255822,
+    "n": 4.999176190255822,
+    "last_ts": 1755111959.987947,
+    "by_publisher": {
+      "roxley": {
+        "success": 0.0,
+        "failure": 4.999176190255822,
+        "n": 4.999176190255822,
+        "last_ts": 1755111959.987947
+      }
+    }
+  },
+  "images-cdn.zmangames.com": {
+    "success": 0.0,
+    "failure": 12.984970973418013,
+    "n": 12.984970973418013,
+    "last_ts": 1755118030.400502,
+    "by_publisher": {
+      "z-man games": {
+        "success": 0.0,
+        "failure": 12.984970973418013,
+        "n": 12.984970973418013,
+        "last_ts": 1755118030.400502
+      }
+    }
+  },
+  "cdn.svc.asmodee.net": {
+    "success": 0.0,
+    "failure": 12.984969484724916,
+    "n": 12.984969484724916,
+    "last_ts": 1755118032.000004,
+    "by_publisher": {
+      "z-man games": {
+        "success": 0.0,
+        "failure": 12.984969484724916,
+        "n": 12.984969484724916,
+        "last_ts": 1755118032.000004
+      }
+    }
+  },
+  "images.zmangames.com": {
+    "success": 0.0,
+    "failure": 1.0,
+    "n": 1.0,
+    "last_ts": 1755118061.527369,
+    "by_publisher": {
+      "z-man games": {
+        "success": 0.0,
+        "failure": 1.0,
+        "n": 1.0,
+        "last_ts": 1755118061.527369
       }
     }
   }

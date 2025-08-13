@@ -1,0 +1,13 @@
+{
+  "timestamp": "20250813_152928",
+  "game_name": "Pandemic Legacy: Season 1",
+  "file_path": "/Users/micahshanks/Dev/bgg_data/rulebooks/Pandemic-Legacy-Season-1_161936_rules.pdf",
+  "source_url": "https://cdn.svc.asmodee.net/production-zman/uploads/2024/09/Pandemic_Rulebook.pdf",
+  "llm_assessment": {
+    "is_official": false,
+    "is_english": true,
+    "rationale": "heuristic"
+  },
+  "screenshot_path": "bgg_data/debug/llm_assessments/20250813_152928_Pandemic_Legacy_Season_1_failed_assessment.png",
+  "current_page_url": "https://www.zmangames.com/game/pandemic/"
+}

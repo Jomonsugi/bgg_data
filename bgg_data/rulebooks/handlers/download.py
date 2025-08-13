@@ -57,7 +57,7 @@ class DownloadHandler:
             'Accept': 'application/pdf, text/html;q=0.9,*/*;q=0.8'
         })
     
-    def download_rulebook(self, url: str, game_name: str, save_screenshots: bool = False, screenshot_path: Optional[Path] = None, web_handler=None) -> Tuple[bool, Optional[str], Optional[str]]:
+    def download_rulebook(self, url: str, game_name: str, save_screenshots: bool = False, screenshot_path: Optional[Path] = None, web_handler=None, game_id: Optional[str] = None) -> Tuple[bool, Optional[str], Optional[str]]:
         """
         Download a rulebook PDF from a URL.
         
@@ -92,13 +92,13 @@ class DownloadHandler:
             # Skip pre-validation HEAD/GET to avoid extra round-trips; rely on robust retrying and error handling below
             
             # Create filename using game name for consistent naming (may be updated later if URL changes)
-            filename = create_rulebook_filename(game_name, url)
+            filename = create_rulebook_filename(game_name, url, game_id)
             file_path = self.rulebooks_dir / filename
             
-            # If similarly-named files already exist, prefer existing PDF; do NOT early-return on existing HTML
+            # If similarly-named files already exist, prefer existing PDF; consider id-appended names first
             safe_base = game_name.replace(' ', '-').replace(':', '').replace("'", '')
-            existing_pdf = self.rulebooks_dir / f"{safe_base}_rules.pdf"
-            existing_html = self.rulebooks_dir / f"{safe_base}_rules.html"
+            existing_pdf = self.rulebooks_dir / (f"{safe_base}_{game_id}_rules.pdf" if game_id else f"{safe_base}_rules.pdf")
+            existing_html = self.rulebooks_dir / (f"{safe_base}_{game_id}_rules.html" if game_id else f"{safe_base}_rules.html")
             if existing_pdf.exists():
                 logger.info(f"Rulebook already exists: {existing_pdf}")
                 return True, existing_pdf.name, str(existing_pdf)
@@ -150,9 +150,15 @@ class DownloadHandler:
                             if browser_success:
                                 success, content = True, browser_content
                             else:
-                                error_msg = f"Failed to download after {self.max_retries} retries (including browser and referer/cookies fallbacks)"
-                                log_download_attempt(game_name, url, False, error_msg)
-                                return False, error_msg, None
+                                # As a last resort, if SSL hostname mismatch is the blocker, attempt insecure fetch
+                                insecure_success, insecure_bytes = self._download_insecure_ssl(url)
+                                if insecure_success:
+                                    logger.warning("Downloaded via insecure SSL fallback due to certificate hostname mismatch. Verify source integrity.")
+                                    success, content = True, insecure_bytes
+                                else:
+                                    error_msg = f"Failed to download after {self.max_retries} retries (including browser and referer/cookies fallbacks)"
+                                    log_download_attempt(game_name, url, False, error_msg)
+                                    return False, error_msg, None
                     except Exception:
                         logger.info("Referer/cookies retry failed unexpectedly, trying browser-based download...")
                         browser_success, browser_content = self._download_with_browser(url, web_handler)
@@ -188,7 +194,7 @@ class DownloadHandler:
                             # Since we now have a PDF, we should not treat this as HTML anymore
                             looks_like_html = False
                             # Recompute filename and path now that URL is a PDF
-                            new_filename = create_rulebook_filename(game_name, url)
+                            new_filename = create_rulebook_filename(game_name, url, game_id)
                             if new_filename != filename:
                                 filename = new_filename
                                 file_path = self.rulebooks_dir / filename
@@ -363,6 +369,23 @@ class DownloadHandler:
                     return False, None
         
         return False, None
+
+    def _download_insecure_ssl(self, url: str) -> Tuple[bool, Optional[bytes]]:
+        """
+        Attempt a final download with SSL verification disabled.
+        Only used when standard retries and browser fallbacks fail.
+        """
+        try:
+            # Limit to a single attempt to avoid repeated insecure traffic
+            resp = self.session.get(url, timeout=20, stream=True, verify=False)
+            resp.raise_for_status()
+            content = resp.content
+            if content:
+                return True, content
+            return False, None
+        except Exception as e:
+            logger.warning(f"Insecure SSL fallback failed: {e}")
+            return False, None
     
     def _is_valid_pdf(self, content: bytes) -> bool:
         """

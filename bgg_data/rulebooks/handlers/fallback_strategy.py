@@ -93,7 +93,7 @@ class FallbackStrategy:
             logger.info(f"Trying direct rulebook search candidate: {url_cand}")
             
             success, filename, file_path = context.download_handler.download_rulebook(
-                url_cand, context.game.name, context.save_screenshots, web_handler=context.web_handler
+                url_cand, context.game.name, context.save_screenshots, web_handler=context.web_handler, game_id=context.game.id
             )
             
             if success:
@@ -135,7 +135,7 @@ class FallbackStrategy:
                         if pdf_url:
                             logger.info(f"Found PDF via BGG thread page: {pdf_url}")
                             success2, filename2, file_path2 = context.download_handler.download_rulebook(
-                                pdf_url, context.game.name, context.save_screenshots, web_handler=context.web_handler
+                                pdf_url, context.game.name, context.save_screenshots, web_handler=context.web_handler, game_id=context.game.id
                             )
                             if success2 and self._verify_downloaded_file(context, file_path2, pdf_url):
                                 return FetchResult(
@@ -169,7 +169,7 @@ class FallbackStrategy:
             logger.info(f"Trying web search fallback candidate: {url_cand}")
             
             success, filename, file_path = context.download_handler.download_rulebook(
-                url_cand, context.game.name, context.save_screenshots, web_handler=context.web_handler
+                url_cand, context.game.name, context.save_screenshots, web_handler=context.web_handler, game_id=context.game.id
             )
             
             if success:
@@ -274,7 +274,7 @@ class FallbackStrategy:
         
         # Try to download the rulebook
         success, filename, file_path = context.download_handler.download_rulebook(
-            resolved_url, context.game.name, context.save_screenshots, web_handler=context.web_handler
+            resolved_url, context.game.name, context.save_screenshots, web_handler=context.web_handler, game_id=context.game.id
         )
         
         if not success:
@@ -308,7 +308,7 @@ class FallbackStrategy:
         """
         # Try to download
         success, filename, file_path = context.download_handler.download_rulebook(
-            pdf_url, context.game.name, context.save_screenshots, web_handler=context.web_handler
+            pdf_url, context.game.name, context.save_screenshots, web_handler=context.web_handler, game_id=context.game.id
         )
         
         if not success:
@@ -344,17 +344,25 @@ class FallbackStrategy:
                     Path(file_path), context.game.name
                 )
                 logger.info(f"LLM assessment: is_official={is_official}, is_english={is_english}")
-                
-                if is_official and is_english:
-                    return True
-                else:
-                    logger.warning(f"Downloaded file failed LLM verification. Rationale: {rationale}")
-                    
-                    # Save debug screenshot if enabled
+
+                # Policy: PDFs are accepted if English, even if "official" is uncertain; HTML remains strict
+                if file_path.lower().endswith('.pdf'):
+                    if is_english:
+                        return True
+                    # Not English → reject
+                    logger.warning(f"English check failed for PDF; rejecting. Rationale: {rationale}")
                     if context.save_screenshots:
                         self._save_debug_screenshot(context, file_path, source_url, is_official, is_english, rationale)
-                    
                     return False
+
+                # For HTML, require both signals
+                if is_official and is_english:
+                    return True
+
+                logger.warning(f"Downloaded HTML failed LLM verification. Rationale: {rationale}")
+                if context.save_screenshots:
+                    self._save_debug_screenshot(context, file_path, source_url, is_official, is_english, rationale)
+                return False
             else:
                 # For non-PDF/HTML files, assume they're valid
                 return True

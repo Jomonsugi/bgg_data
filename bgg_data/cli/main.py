@@ -6,6 +6,7 @@ import argparse
 import logging
 from pathlib import Path
 from typing import List, Optional
+from datetime import datetime
 
 from ..config import DATABASE_PATH, RULEBOOKS_DIR
 from ..database import BGGDatabase, Game
@@ -47,7 +48,7 @@ class BGGIntegration:
         filtered_games = []
         
         for game in games:
-            if not is_rulebook_already_downloaded(game.name, self.rulebooks_dir):
+            if not is_rulebook_already_downloaded(game.name, self.rulebooks_dir, getattr(game, 'id', None)):
                 filtered_games.append(game)
             else:
                 logger.debug(f"Rulebook already exists for '{game.name}', skipping")
@@ -177,18 +178,31 @@ class BGGIntegration:
 def main():
     """Main CLI entry point for BGG integration."""
     try:
-        # Set up logging first
-        setup_logging()
-        
-        # Simple CLI args: --rank-from, --rank-to, --limit, --screenshots
+        # Set up per-run logging first
         parser = argparse.ArgumentParser(description="Fetch rulebooks for BGG games from DB")
         parser.add_argument("--limit", type=int, default=None, help="Max number of games to process")
-        parser.add_argument("--rank-from", type=int, default=None, help="Inclusive lower bound rank (e.g., 6)")
-        parser.add_argument("--rank-to", type=int, default=None, help="Inclusive upper bound rank (e.g., 10)")
+        parser.add_argument("--rank-from", type=int, default=None, help="Inclusive lower bound rank (e.g., 1)")
+        parser.add_argument("--rank-to", type=int, default=None, help="Inclusive upper bound rank (e.g., 20)")
         parser.add_argument("--screenshots", action="store_true", help="Save screenshots for debugging")
         parser.add_argument("--list-missing", action="store_true", help="Only list games missing rulebooks and exit")
+        parser.add_argument("--log-file", type=str, default=None, help="Custom log file name or absolute path")
 
         args = parser.parse_args()
+
+        # Build a default per-run log filename when not provided
+        if args.log_file:
+            log_file = args.log_file
+        else:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            rf = args.rank_from if args.rank_from is not None else "all"
+            rt = args.rank_to if args.rank_to is not None else "all"
+            lm = args.limit if args.limit is not None else "all"
+            log_file = f"run_{ts}_r{rf}-{rt}_lim{lm}.log"
+
+        setup_logging(log_file)
+        
+        # Simple CLI args: --rank-from, --rank-to, --limit, --screenshots
+        # From here on, use args parsed above
 
         # Initialize integration
         integration = BGGIntegration()
@@ -229,6 +243,7 @@ def main():
             return
 
         print("\nStarting rulebook fetch...")
+        logger.info("Per-run logs will be saved to file handler configured at startup")
         from ..rulebooks import RulebookOrchestrator
         fetcher = RulebookOrchestrator(save_screenshots=args.screenshots)
         if not games:

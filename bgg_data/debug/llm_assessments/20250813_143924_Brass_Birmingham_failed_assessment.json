@@ -1,0 +1,13 @@
+{
+  "timestamp": "20250813_143924",
+  "game_name": "Brass: Birmingham",
+  "file_path": "/Users/micahshanks/Dev/bgg_data/rulebooks/Brass-Birmingham_224517_rules.pdf",
+  "source_url": "https://www.orderofgamers.com/downloads/BrassBirmingham_v1.2.pdf",
+  "llm_assessment": {
+    "is_official": false,
+    "is_english": false,
+    "rationale": "Error assessing PDF: Invalid format specifier ' true|false, \"is_official\": true|false' for object of type 'str'"
+  },
+  "screenshot_path": "bgg_data/debug/llm_assessments/20250813_143924_Brass_Birmingham_failed_assessment.png",
+  "current_page_url": "https://roxley.com/products/brass-birmingham-deluxe-edition?srsltid=AfmBOopOReMGERvQl8pcFqtdkSBEMQ1M7dSQnU04JJtcE-CY0qGNcsIv"
+}

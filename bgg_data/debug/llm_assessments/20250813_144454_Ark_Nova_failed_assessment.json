@@ -1,0 +1,13 @@
+{
+  "timestamp": "20250813_144454",
+  "game_name": "Ark Nova",
+  "file_path": "/Users/micahshanks/Dev/bgg_data/rulebooks/Ark-Nova_342942_rules.pdf",
+  "source_url": "https://capstone-games.com/wp-content/uploads/2023/05/AN_Exp1_Rules_EN_0-7_low.pdf",
+  "llm_assessment": {
+    "is_official": false,
+    "is_english": false,
+    "rationale": "Error assessing PDF: Invalid format specifier ' true|false, \"is_official\": true|false' for object of type 'str'"
+  },
+  "screenshot_path": "bgg_data/debug/llm_assessments/20250813_144454_Ark_Nova_failed_assessment.png",
+  "current_page_url": "https://capstone-games.com/wp-content/uploads/2023/05/AN_Exp1_Rules_EN_0-7_low.pdf"
+}

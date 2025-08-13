@@ -20,8 +20,6 @@ from .handlers import (
     LLMHandler,
     DownloadHandler,
     WebSearchFallback,
-    FallbackOrchestrator,
-    FallbackContext,
 )
 from ..models import Game, FetchResult
 from ..config import RULEBOOKS_DIR
@@ -57,7 +55,6 @@ class AgenticRulebookFetcher:
         self.llm_handler = LLMHandler()
         self.download_handler = DownloadHandler(self.rulebooks_dir)
         self.web_search = WebSearchFallback()
-        self.fallback_orchestrator = FallbackOrchestrator(self.web_search)
 
         # Pre-test LLM connectivity (non-fatal)
         try:
@@ -99,7 +96,7 @@ class AgenticRulebookFetcher:
                 url_net, content = web.capture_pdf_via_network(wait_seconds=2.0)
                 if url_net and content:
                     success_net, filename_net, file_path_net = self.download_handler.download_rulebook(
-                        url_net, game.name, self.save_screenshots, web_handler=web
+                        url_net, game.name, self.save_screenshots, web_handler=web, game_id=game.id
                     )
                     if success_net:
                         return {
@@ -120,40 +117,14 @@ class AgenticRulebookFetcher:
             pdf_url = web.quick_html_check()
             if not pdf_url:
                 return {}
+            # Only accept direct PDFs here to keep logic simple; if HTML-like, defer to vision
+            if not str(pdf_url).lower().endswith('.pdf'):
+                return {}
             success, filename, file_path = self.download_handler.download_rulebook(
-                pdf_url, game.name, self.save_screenshots, web_handler=web
+                pdf_url, game.name, self.save_screenshots, web_handler=web, game_id=game.id
             )
             if not success:
                 return {}
-            # Verify with LLM if PDF/HTML
-            try:
-                if file_path and (file_path.lower().endswith('.pdf') or file_path.lower().endswith('.html')):
-                    is_official, is_english, _ = self.llm_handler.assess_file_official_rulebook(
-                        Path(file_path), game.name
-                    )
-                    if not (is_official and is_english):
-                        try:
-                            if file_path and Path(file_path).exists():
-                                Path(file_path).unlink()
-                        except Exception:
-                            pass
-                        return {}
-            except Exception:
-                # If verification fails, accept the download to avoid blocking
-                pass
-            # Prefer PDF: if HTML, store as provisional and continue to search
-            if file_path and file_path.lower().endswith('.html'):
-                return {
-                    "provisional_result": FetchResult(
-                        game_name=game.name,
-                        success=True,
-                        rulebook_url=pdf_url,
-                        filename=filename,
-                        file_path=file_path,
-                        method="html_check_provisional",
-                    )
-                }
-            # It's a PDF, accept immediately
             return {
                 "pdf_url": pdf_url,
                 "result": FetchResult(
@@ -180,10 +151,8 @@ class AgenticRulebookFetcher:
             ok, screenshot = web.take_screenshot(game_name=game.name, site_type="official_llm")
             if not ok or not screenshot:
                 return {}
-            cands = web.collect_candidate_links(max_candidates=6)
-            # Capture 1-2 focused element screenshots to aid vision
-            elem_shots = web.take_element_screenshots_for_candidates(cands, max_images=2)
-            success, url, _conf = self.llm_handler.extract_rulebook_url(screenshot, game.name, candidates=cands, extra_images=elem_shots)
+            # Simple vision: single screenshot, no extra candidate context
+            success, url, _conf = self.llm_handler.extract_rulebook_url(screenshot, game.name)
             if not success or not url:
                 return {}
             # Resolve relative URLs returned by the LLM against current page
@@ -195,30 +164,10 @@ class AgenticRulebookFetcher:
             except Exception:
                 pass
             dl_success, filename, file_path = self.download_handler.download_rulebook(
-                url, game.name, self.save_screenshots, web_handler=web
+                url, game.name, self.save_screenshots, web_handler=web, game_id=game.id
             )
             if not dl_success:
                 return {}
-            # Optional verification
-            try:
-                if file_path and (file_path.lower().endswith('.pdf') or file_path.lower().endswith('.html')):
-                    is_official, is_english, _ = self.llm_handler.assess_file_official_rulebook(
-                        Path(file_path), game.name
-                    )
-                    if not (is_official and is_english):
-                        try:
-                            # Record failure for LLM-found domain (associated with publisher)
-                            self.web_search.scorer.record_failure(url, game.publisher)
-                        except Exception:
-                            pass
-                        try:
-                            if file_path and Path(file_path).exists():
-                                Path(file_path).unlink()
-                        except Exception:
-                            pass
-                        return {}
-            except Exception:
-                pass
             return {
                 "pdf_url": url,
                 "result": FetchResult(
@@ -236,34 +185,33 @@ class AgenticRulebookFetcher:
             web = getattr(self, "_web", None)
             if not web:
                 return {}
-            # Reuse our existing fallback orchestrator which now uses Tavily underneath
-            ctx = FallbackContext(
-                game=game,
-                web_handler=web,
-                llm_handler=self.llm_handler,
-                download_handler=self.download_handler,
-                save_screenshots=self.save_screenshots,
-                rulebooks_dir=self.rulebooks_dir,
-            )
-            res = self.fallback_orchestrator.execute_fallback_strategy(ctx)
-            if res and res.success:
-                return {"result": res}
+            # Simple web search: look for direct PDFs first, then scan BGG threads for a PDF link
+            try:
+                candidates = self.web_search.search_official_rulebook(game.name, publisher=getattr(game, 'publisher', None), relaxed=True)
+            except Exception:
+                candidates = []
+            from urllib.parse import urlparse
+            for cand in candidates[:5]:
+                url = cand.url
+                try:
+                    if url.lower().endswith('.pdf'):
+                        ok, filename, file_path = self.download_handler.download_rulebook(url, game.name, self.save_screenshots, web_handler=web, game_id=game.id)
+                        if ok:
+                            return {"result": FetchResult(game_name=game.name, success=True, rulebook_url=url, filename=filename, file_path=file_path, method="web_search_pdf")}
+                    # If it's a BGG thread, open and run quick HTML check for a PDF
+                    parsed = urlparse(url)
+                    if 'boardgamegeek.com' in parsed.netloc and '/thread/' in parsed.path:
+                        if web.navigate_to_page(url):
+                            pdf_url = web.quick_html_check()
+                            if pdf_url and pdf_url.lower().endswith('.pdf'):
+                                ok2, filename2, file_path2 = self.download_handler.download_rulebook(pdf_url, game.name, self.save_screenshots, web_handler=web, game_id=game.id)
+                                if ok2:
+                                    return {"result": FetchResult(game_name=game.name, success=True, rulebook_url=pdf_url, filename=filename2, file_path=file_path2, method="web_search_bgg_thread")}
+                except Exception:
+                    continue
             return {}
 
-        def finalize_with_provisional(state: FetchState) -> FetchState:
-            if state.get("result"):
-                return {}
-            prov = state.get("provisional_result")
-            if prov:
-                return {"result": prov}
-            return {}
-
-        def is_done_after_search(state: FetchState) -> str:
-            if state.get("result"):
-                return END
-            if state.get("provisional_result"):
-                return "finalize_with_provisional"
-            return "try_official_llm"
+        # No provisional handling in simplified flow
 
         graph.add_node("extract_official_from_bgg", extract_official_from_bgg)
         graph.add_node("try_official_html", try_official_html)
@@ -271,12 +219,9 @@ class AgenticRulebookFetcher:
         graph.add_node("try_agentic_websearch", try_agentic_websearch)
 
         graph.add_edge("extract_official_from_bgg", "try_official_html")
-        # Prioritize web search before vision
-        graph.add_edge("try_official_html", "try_agentic_websearch")
-        graph.add_node("finalize_with_provisional", finalize_with_provisional)
-        graph.add_conditional_edges("try_agentic_websearch", is_done_after_search, {END: END, "finalize_with_provisional": "finalize_with_provisional", "try_official_llm": "try_official_llm"})
-        graph.add_edge("finalize_with_provisional", END)
-        graph.add_edge("try_official_llm", END)
+        graph.add_edge("try_official_html", "try_official_llm")
+        graph.add_edge("try_official_llm", "try_agentic_websearch")
+        graph.add_edge("try_agentic_websearch", END)
 
         graph.set_entry_point("extract_official_from_bgg")
         return graph.compile()
@@ -289,7 +234,7 @@ class AgenticRulebookFetcher:
 
             # Skip if rulebook already exists
             try:
-                if is_rulebook_already_downloaded(game.name, self.rulebooks_dir):
+                if is_rulebook_already_downloaded(game.name, self.rulebooks_dir, game.id):
                     elapsed = time.time() - start
                     results.append(FetchResult(
                         game_name=game.name,

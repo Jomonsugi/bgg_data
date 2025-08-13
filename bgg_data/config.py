@@ -9,6 +9,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent  # Go up one level to workspace root
 RULEBOOKS_DIR = PROJECT_ROOT / "rulebooks"
 DATABASE_PATH = PROJECT_ROOT / "bgg_games.db"
+# Logs directory for per-run logs
+LOGS_DIR = PROJECT_ROOT / "bgg_data_cache" / "logs"
 
 # Model backends and configuration
 TOGETHER_API_KEY = os.environ.get("TOGETHER_API_KEY")
