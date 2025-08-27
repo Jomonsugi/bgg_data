@@ -10,8 +10,11 @@ __version__ = "0.1.0"
 __author__ = "BGG Data Team"
 
 # Main package imports for convenience
-from .database import BGGDatabase
-from .rulebooks import RulebookOrchestrator
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent))
+from database import BGGDatabase
+from .src import RulebookOrchestrator
 from .models import Game, FetchResult
 from .logging_config import setup_logging
 

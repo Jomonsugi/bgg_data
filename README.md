@@ -1,111 +1,180 @@
-# BGG Data Package
+# BGG Data - Rulebook Fetching Experiments
 
-A Python package for exploring and experimenting with strategies to collect board game data from LLM vision models, to agentic workflows, and web scraping techniques. 
+A collection of experimental approaches for automatically finding and downloading board game rulebooks using different AI and automation strategies.
+
+## Overview
+
+This project explores various frameworks and techniques for automatically collecting board game rulebooks from the web. Each directory represents a different experimental approach, allowing for comparison and evaluation of different strategies.
+
+## Project Structure
+
+### 🗄️ [`database/`](bgg_data/database/README.md)
+**Shared Database Layer**
+- BoardGameGeek (BGG) game data collection and storage
+- SQLite database shared across all experimental approaches
+- Game metadata, rankings, and publisher information
+- Common data layer for consistent game information
+
+### 📊 [`dag/`](bgg_data/dag/README.md) 
+**Rule-Based Approach**
+- Structured, deterministic workflow using LLM vision models
+- Rule-based decision making with predictable fallbacks
+- Selenium web automation with screenshot analysis
+- Multiple vision backends (Together.ai, local MLX)
+- Robust error handling and retry mechanisms
+
+### 🤖 [`hf_agent/`](bgg_data/hf_agent/README.md)
+**Agentic Approach**
+- Autonomous AI agent using Hugging Face SmolAgents
+- Dynamic decision making and adaptive problem solving  
+- Browser automation with visual context understanding
+- Agent-driven web navigation and content discovery
+- Experimental autonomous behavior patterns
 
 ## Quick Start
 
-- Requirements:
-  - Python 3.11+
-  - uv (package manager)
-  - Chrome + ChromeDriver (for web automation)
-  - Tavily API key in your shell (`TAVILY_API_KEY`)
-  - Optional: local MLX vision model (no external LLM needed)
+### Prerequisites
+- Python 3.11+
+- uv package manager
+- Chrome browser + ChromeDriver
 
-Install deps:
-
+### Installation
 ```bash
+# Clone and install dependencies
+git clone <repository>
+cd bgg_data
 uv sync
 ```
 
-## Update Database (BGG Games)
-
-Collect BGG games into the local SQLite DB `bgg_games.db`:
-
+### Collect Game Data (Required First Step)
 ```bash
-# Top 100 games
+# Collect BGG data for top 100 games
 uv run python -m bgg_data.database.collect_data --limit 100
-
-# A specific window (e.g., ranks 51–100)
-uv run python -m bgg_data.database.collect_data --start-rank 51 --limit 50
 ```
 
-- Options:
-  - `--start-rank N` (default 1)
-  - `--limit N` (default 100)
-  - `--delay N` seconds between API calls (default 3)
-  - `--db PATH` custom DB path
+### Choose Your Approach
 
-## Fetch Rulebooks (Agentic)
-
-The rulebook fetcher is agentic by default:
-- Tries BGG official website → HTML quick scan → MLX/Together vision → Tavily search → verification
-- Prefers PDFs; will save HTML if no PDF is available and try to upgrade HTML→PDF when possible.
-
-Run for your DB:
-
+**Rule-Based (DAG)**
 ```bash
-# Process all games missing rulebooks
-uv run python -m bgg_data.cli.main
-
-# Only ranks 1–20
-uv run python -m bgg_data.cli.main --rank-from 1 --rank-to 20
-
-# Limit to 5 games and save screenshots
-uv run python -m bgg_data.cli.main --limit 5 --screenshots
+# Process games with structured workflow
+uv run python -m dag.cli.main --rank-from 1 --rank-to 20
 ```
 
-### List Missing Rulebooks Only
-
-Quickly see which games (in a rank range or limit) are still missing rulebooks without running the fetcher:
-
+**Agentic (HF Agent)**  
 ```bash
-# List all missing
-uv run python -m bgg_data.cli.main --list-missing
-
-# List missing within a rank window
-uv run python -m bgg_data.cli.main --rank-from 1 --rank-to 200 --list-missing
-
-# List missing with a limit
-uv run python -m bgg_data.cli.main --limit 50 --list-missing
+# Let AI agent search autonomously
+uv run python hf_agent/web_search_agent.py "Brass Birmingham"
 ```
 
-This uses the filenames in `rulebooks/` and de-duplicates by game. PDFs are preferred; HTML is counted only when no PDF exists for that game.
+## Experimental Approaches
 
-### Vision Backend
+### Rule-Based (DAG)
+**Best for**: Predictable results, debugging, production use
+- ✅ Consistent behavior
+- ✅ Clear error handling  
+- ✅ Efficient processing
+- ❌ Less adaptable to new sites
 
-- Default: Together.ai (requires `TOGETHER_API_KEY`)
-- Local: MLX vision (no external API). Example:
+### Agentic (HF Agent)
+**Best for**: Exploration, handling edge cases, research
+- ✅ Adaptive to new layouts
+- ✅ Creative problem solving
+- ✅ Autonomous discovery
+- ❌ Unpredictable behavior
+- ❌ Harder to debug
 
+## Shared Components
+
+### Database Layer
+All approaches use the same SQLite database:
+- Game metadata from BGG API
+- Ranking and publisher information
+- Shared game identifiers
+- Consistent data access patterns
+
+### Output Standards
+- **Rulebooks**: Standardized PDF filenames
+- **Logs**: Structured logging across approaches
+- **Screenshots**: Debug visual information
+- **Metadata**: Download success tracking
+
+## API Keys & Configuration
+
+### Optional but Recommended
 ```bash
-VISION_BACKEND=mlx \
-MLX_VLM_MODEL=mlx-community/Llama-3.2-11B-Vision-Instruct-4bit \
-uv run python -m bgg_data.cli.main --rank-from 1 --rank-to 20
+# For LLM vision models
+export TOGETHER_API_KEY="your_key"
+export HUGGINGFACE_API_KEY="your_key" 
+export OPENAI_API_KEY="your_key"
+
+# For web search fallbacks
+export TAVILY_API_KEY="your_key"
 ```
 
-To install MLX vision support, the dependency is already in this project (`mlx-vlm`). Model reference: `mlx-community/Llama-3.2-11B-Vision-Instruct-4bit` on Hugging Face.
-
-### Coverage Output
-
-Coverage counts both PDFs and HTML and prints a breakdown, for example:
-
-```
-Total games in database: 20
-Existing rulebooks: 20
-  - PDFs: 19  |  HTML: 1
-Missing rulebooks: 0
-Coverage: 100.0%
+### Local Alternatives
+```bash
+# Use local MLX models (no API keys needed)
+VISION_BACKEND=mlx uv run python -m dag.cli.main --rank-from 1 --rank-to 5
 ```
 
-Note: counts reflect files present in `rulebooks/`. If numbers look off, clean or review that folder.
+## Performance Comparison
 
-## Outputs
+| Metric | DAG (Rule-Based) | HF Agent (Agentic) |
+|--------|------------------|---------------------|
+| **Speed** | Fast (structured) | Variable (thinking time) |
+| **Success Rate** | High (predictable) | Variable (adaptive) |
+| **Debugging** | Easy (logs) | Moderate (screenshots) |
+| **Maintenance** | Code changes | Prompt engineering |
+| **Scalability** | Excellent | Good |
 
-- Database: `bgg_games.db`
-- Rulebooks: `rulebooks/` (standardized filenames like `Game-Name_rules.pdf`)
-- Screenshots: `screenshots/Game_Name/` (if `--screenshots`)
-- Logs: `bgg_data.log`
+## Future Experiments
 
-## Notes
+The modular structure makes it easy to add new approaches:
 
-- Web search uses Tavily (via `TAVILY_API_KEY`) with fallback; you can run without the vision backend in many cases.
-- If official sites block direct downloads, the agent falls back to reliable sources when possible and verifies files.
+### Planned Additions
+- **`selenium_pure/`** - Pure Selenium without LLM vision
+- **`playwright_agent/`** - Playwright-based automation
+- **`api_first/`** - API-focused approach with web fallback
+- **`ml_classifier/`** - Machine learning classification of download links
+- **`hybrid/`** - Combination of multiple approaches
+
+### Research Areas
+- Multi-agent collaboration
+- Reinforcement learning from successful downloads
+- Site-specific strategy learning
+- Quality assessment of downloaded rulebooks
+- Cross-validation between approaches
+
+## Contributing
+
+Each experimental approach is self-contained but shares common interfaces:
+
+1. **Game Input**: Uses shared `Game` objects from database
+2. **Output Format**: Standardized PDF naming and location
+3. **Logging**: Consistent log formats for comparison
+4. **Configuration**: Shared environment variables where possible
+
+### Adding New Approaches
+1. Create new directory (e.g., `my_approach/`)
+2. Add README.md explaining the approach
+3. Implement game processing with shared database
+4. Follow output standards for comparison
+5. Update this root README with the new approach
+
+## Evaluation & Metrics
+
+### Success Metrics
+- **Download Success Rate**: Percentage of games with successful rulebook downloads
+- **Processing Speed**: Games processed per minute
+- **Error Recovery**: Ability to handle failed attempts
+- **Content Quality**: Validation of downloaded PDFs
+
+### Comparison Tools
+- Cross-approach validation of results
+- Performance benchmarking scripts
+- Success rate analysis
+- Error pattern identification
+
+## License
+
+This project is experimental research code. See [LICENSE](LICENSE) for details.

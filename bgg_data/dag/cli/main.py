@@ -9,9 +9,9 @@ from typing import List, Optional
 from datetime import datetime
 
 from ..config import DATABASE_PATH, RULEBOOKS_DIR
-from ..database import BGGDatabase, Game
-from ..rulebooks import AgenticRulebookFetcher
-from ..rulebooks.utils import is_rulebook_already_downloaded, extract_game_name_from_filename
+from database import BGGDatabase, Game
+from ..src import AgenticRulebookFetcher
+from ..src.utils import is_rulebook_already_downloaded, extract_game_name_from_filename
 from ..logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -244,7 +244,7 @@ def main():
 
         print("\nStarting rulebook fetch...")
         logger.info("Per-run logs will be saved to file handler configured at startup")
-        from ..rulebooks import RulebookOrchestrator
+        from ..src import RulebookOrchestrator
         fetcher = RulebookOrchestrator(save_screenshots=args.screenshots)
         if not games:
             logger.info("No missing rulebooks detected for the selected range; nothing to do.")
