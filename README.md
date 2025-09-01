@@ -1,10 +1,10 @@
 # BGG Data - Rulebook Fetching Experiments
 
-A collection of experimental approaches for automatically finding and downloading board game rulebooks using different AI and automation strategies.
+A collection of experimental approaches for automatically finding and downloading board game rulebooks using different LLM, agent, and automation strategies.
 
 ## Overview
 
-This project explores various frameworks and techniques for automatically collecting board game rulebooks from the web. Each directory represents a different experimental approach, allowing for comparison and evaluation of different strategies.
+This project explores various frameworks and techniques for automatically collecting board game rulebooks from the web. Each directory represents a different experimental approach, allowing for comparison and evaluation of different strategies. 
 
 ## Project Structure
 
