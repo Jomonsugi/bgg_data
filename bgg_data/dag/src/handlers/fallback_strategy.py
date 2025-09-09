@@ -13,7 +13,8 @@ from .search import WebSearchFallback, SearchResult
 from .web import WebPageHandler
 from .llm import LLMHandler
 from .download import DownloadHandler
-from ...models import Game, FetchResult
+from bgg_data.models import Game
+from ...models import FetchResult
 
 logger = logging.getLogger(__name__)
 

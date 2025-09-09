@@ -8,7 +8,7 @@ This module handles:
 """
 
 from .operations import BGGDatabase
-from dag.models import Game
+from bgg_data.models import Game
 
 __all__ = [
     "Game", 

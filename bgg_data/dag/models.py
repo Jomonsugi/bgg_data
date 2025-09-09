@@ -1,20 +1,9 @@
 """
-Shared data models for the BGG Data package.
+Data models specific to the DAG rulebook fetching layer.
 """
 
 from dataclasses import dataclass
 from typing import Optional
-
-
-@dataclass
-class Game:
-    """Unified game data model."""
-    name: str
-    url: str
-    id: Optional[str] = None
-    rank: Optional[int] = None
-    publisher: Optional[str] = None
-    year_published: Optional[int] = None
 
 
 @dataclass 

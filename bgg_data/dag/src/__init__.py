@@ -12,7 +12,8 @@ This package handles:
 from .agentic_fetcher import AgenticRulebookFetcher as RulebookOrchestrator
 # Backwards-compat export
 AgenticRulebookFetcher = RulebookOrchestrator
-from ..models import Game, FetchResult
+from bgg_data.models import Game
+from ..models import FetchResult
 
 __all__ = [
     "RulebookOrchestrator",

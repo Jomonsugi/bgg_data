@@ -15,7 +15,8 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 from database import BGGDatabase
 from .src import RulebookOrchestrator
-from .models import Game, FetchResult
+from bgg_data.models import Game
+from .models import FetchResult
 from .logging_config import setup_logging
 
 __all__ = [

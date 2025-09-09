@@ -10,7 +10,7 @@ import sqlite3
 from pathlib import Path
 from typing import List, Optional
 
-from dag.models import Game
+from bgg_data.models import Game
 from .models import create_database
 
 logger = logging.getLogger(__name__)

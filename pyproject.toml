@@ -16,7 +16,11 @@ dependencies = [
     "tavily-python>=0.7.0",
     "langgraph>=0.2.35",
     "mlx-vlm>=0.1.0",
+    "llama-index>=0.11.0",
+    "llama-parse>=0.4.0",
+    "python-dotenv>=1.0.1",
 ]
 
 [project.scripts]
 bgg-fetch-rulebooks = "bgg_data.cli.main:main"
+ bgg-workflow-rulebooks = "bgg_data.llama_index_workflow.cli:main"

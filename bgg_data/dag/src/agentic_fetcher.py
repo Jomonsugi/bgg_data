@@ -21,7 +21,8 @@ from .handlers import (
     DownloadHandler,
     WebSearchFallback,
 )
-from ..models import Game, FetchResult
+from bgg_data.models import Game
+from ..models import FetchResult
 from ..config import RULEBOOKS_DIR
 from .utils import is_rulebook_already_downloaded
 
