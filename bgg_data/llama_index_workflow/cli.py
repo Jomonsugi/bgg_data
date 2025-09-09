@@ -2,8 +2,12 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Optional
+
+# Fix tokenizer parallelism warnings from Selenium forking
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 from .workflow import RulebookWorkflow, RunConfig, load_or_init_context, save_context
 from llama_index.core.workflow import StartEvent

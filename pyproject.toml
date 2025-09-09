@@ -16,6 +16,7 @@ dependencies = [
     "tavily-python>=0.7.0",
     "langgraph>=0.2.35",
     "mlx-vlm>=0.1.0",
+    "mlx-lm>=0.20.0",
     "llama-index>=0.11.0",
     "llama-parse>=0.4.0",
     "python-dotenv>=1.0.1",

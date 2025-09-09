@@ -1,11 +1,11 @@
 {
   "results": [
     {
-      "game_name": "Brass: Birmingham",
+      "game_name": "Gloomhaven",
       "success": false,
       "rulebook_url": null,
       "file_path": null,
-      "method": "pdf_candidate_failed"
+      "method": "all_strategies_exhausted"
     }
   ]
 }
