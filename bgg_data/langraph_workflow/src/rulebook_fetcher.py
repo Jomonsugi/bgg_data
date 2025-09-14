@@ -1,8 +1,8 @@
-"""
-Rulebook orchestrator using LangGraph to coordinate the overall flow.
+"""Fetch rulebook PDFs using a small LangGraph-driven flow.
 
-This wraps the existing handlers and fallback logic in a clear, inspectable
-graph so the order of operations and fallbacks are explicit and extensible.
+The flow tries the official site first, then a lightweight vision step,
+then a simple web-search fallback. Each step is explicit so the order
+and fallbacks are easy to adjust.
 """
 
 from __future__ import annotations
@@ -44,8 +44,8 @@ class FetchState(TypedDict, total=False):
     total_time_s: float
 
 
-class AgenticRulebookFetcher:
-    """Rulebook fetching orchestrator driven by LangGraph."""
+class RulebookFetcher:
+    """Fetch and save rulebook PDFs for a list of games."""
 
     def __init__(self, rulebooks_dir: Path = RULEBOOKS_DIR, save_screenshots: bool = False):
         self.rulebooks_dir = rulebooks_dir

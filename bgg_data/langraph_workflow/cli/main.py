@@ -10,7 +10,7 @@ from datetime import datetime
 
 from ..config import DATABASE_PATH, RULEBOOKS_DIR
 from database import BGGDatabase, Game
-from ..src import AgenticRulebookFetcher
+from ..src import RulebookOrchestrator
 from ..src.utils import is_rulebook_already_downloaded, extract_game_name_from_filename
 from ..logging_config import setup_logging
 
@@ -93,7 +93,7 @@ class BGGIntegration:
                 return []
             
             # Initialize and run the fetcher
-            self.fetcher = RulebookFetcher(
+            self.fetcher = RulebookOrchestrator(
                 rulebooks_dir=self.rulebooks_dir,
                 save_screenshots=save_screenshots
             )

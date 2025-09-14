@@ -20,8 +20,17 @@ dependencies = [
     "llama-index>=0.11.0",
     "llama-parse>=0.4.0",
     "python-dotenv>=1.0.1",
+    "helium>=5.1.1",
+    "webdriver-manager>=4.0.2",
+    "smolagents>=1.21.3",
+    "duckduckgo-search>=8.1.1",
+    "ddgs>=9.5.5",
+    "pymupdf>=1.24.0",
+    "huggingface_hub>=0.23.0",
+    "langdetect>=1.0.9",
+    "workflows>=0.1.0",
 ]
 
 [project.scripts]
 bgg-fetch-rulebooks = "bgg_data.cli.main:main"
- bgg-workflow-rulebooks = "bgg_data.llama_index_workflow.cli:main"
+bgg-workflow-rulebooks = "bgg_data.llama_index_workflow.cli:main"

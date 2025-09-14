@@ -9,7 +9,7 @@ This package handles:
 - Orchestrated flow (LangGraph)
 """
 
-from .agentic_fetcher import AgenticRulebookFetcher as RulebookOrchestrator
+from .rulebook_fetcher import RulebookFetcher as RulebookOrchestrator
 # Backwards-compat export
 AgenticRulebookFetcher = RulebookOrchestrator
 from bgg_data.models import Game

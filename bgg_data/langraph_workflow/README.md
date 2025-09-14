@@ -16,7 +16,7 @@ The DAG (Directed Acyclic Graph) approach uses a structured, rule-based workflow
 ```
 dag/
 ├── src/                    # Main rulebook fetching modules (renamed from rulebooks/)
-│   ├── agentic_fetcher.py  # Main orchestrator class
+│   ├── rulebook_fetcher.py  # Main orchestrator class
 │   ├── handlers/           # Specialized handlers for different tasks
 │   │   ├── web.py         # Web scraping and browser automation  
 │   │   ├── llm.py         # LLM vision model integration

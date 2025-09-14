@@ -1,12 +1,13 @@
-"""
-LlamaIndex-based workflow for finding and downloading official board game rulebooks.
+"""Simple LlamaIndex Workflow for fetching board game rulebooks.
 
-This package provides:
-- Specialized tools (DB query, Tavily search, BGG link parser, PDF parser, browser probe)
-- An event-driven Workflow that orchestrates tool usage and persists context
-- A CLI entrypoint to run the workflow across a rank range
+This package provides a minimal workflows v2 setup with tools to:
+- query the local SQLite DB for games by rank
+- search for rulebook PDF links via DuckDuckGo
+- download PDFs to a local folder
+
+Designed to be easy to read and extend.
 """
 
-__all__ = []
+__all__ = ["tools", "workflow", "cli"]
 
 

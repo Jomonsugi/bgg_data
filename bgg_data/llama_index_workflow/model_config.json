@@ -1,0 +1,15 @@
+{
+  "text_language": {
+    "model_id": "meta-llama/Llama-3.2-3B-Instruct",
+    "provider": "auto"
+  },
+  "exploration_llm": {
+    "model_id": "meta-llama/Llama-3.2-3B-Instruct",
+    "provider": "auto"
+  },
+  "official_vlm": {
+    "model_id": "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+    "provider": "together"
+  }
+}
+
