@@ -1,5 +1,17 @@
 import sqlite3
 import os
+from dataclasses import dataclass
+from typing import Optional
+
+@dataclass
+class Game:
+    """Game model representing a board game from BGG."""
+    id: str
+    name: str
+    rank: Optional[int] = None
+    url: Optional[str] = None
+    publisher: Optional[str] = None
+    year_published: Optional[int] = None
 
 def create_database(db_path="bgg_games.db"):
     """Create the database and tables for BGG game data."""

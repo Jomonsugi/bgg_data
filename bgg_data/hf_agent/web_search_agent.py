@@ -26,7 +26,7 @@ DO NOT start with a search with the term "rulebook" or "rules". Just search for 
 The best way to verify if you have found the rulebook is to follow the url you have found and verify that the webpage looks like a rulebook.
 You should only try another search if the official website does not have the rulebook.
 The rulebook will be saved in the folder bgg_data/hf_agent/hf_rulebooks
-If I cannot find the rulebook, I will return "No rulebook found".
+If you cannot find the rulebook, you will return "No rulebook found".
 """
 
 

@@ -10,8 +10,7 @@ import sqlite3
 from pathlib import Path
 from typing import List, Optional
 
-from bgg_data.models import Game
-from .models import create_database
+from .models import Game, create_database
 
 logger = logging.getLogger(__name__)
 
@@ -38,54 +37,50 @@ class BGGDatabase:
     def get_games(self, limit: Optional[int] = None, rank_from: Optional[int] = None, 
                   rank_to: Optional[int] = None) -> List[Game]:
         """
-        Get games from the BGG database.
+        Retrieve games from the database with optional filtering.
         
         Args:
             limit: Maximum number of games to return
-            rank_from: Minimum rank to include (lower number = higher rank)
-            rank_to: Maximum rank to include
+            rank_from: Minimum rank (inclusive)
+            rank_to: Maximum rank (inclusive)
             
         Returns:
-            List of BGG games
+            List of Game objects
         """
         try:
-            if not self.db_path.exists():
-                logger.info(f"Database not found at {self.db_path}, creating it...")
-                create_database(str(self.db_path))
-            
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(str(self.db_path))
             cursor = conn.cursor()
             
             # Check if games table exists
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='games'")
-            table_exists = cursor.fetchone() is not None
-            
-            if not table_exists:
+            cursor.execute("""
+                SELECT name FROM sqlite_master 
+                WHERE type='table' AND name='games'
+            """)
+            if not cursor.fetchone():
                 logger.info("Games table doesn't exist, creating database...")
-                conn.close()
                 create_database(str(self.db_path))
-                conn = sqlite3.connect(self.db_path)
+                conn = sqlite3.connect(str(self.db_path))
                 cursor = conn.cursor()
             
-            # Build query
-            query = """
-                SELECT bgg_id, name, rank, url, publisher, year_published
-                FROM games 
-                WHERE 1=1
-            """
+            # Build query based on parameters
+            query = "SELECT bgg_id, name, rank, url, publisher, year_published FROM games"
             params = []
+            conditions = []
             
-            # Rank range filters
             if rank_from is not None:
-                query += " AND rank >= ?"
+                conditions.append("rank >= ?")
                 params.append(rank_from)
+            
             if rank_to is not None:
-                query += " AND rank <= ?"
+                conditions.append("rank <= ?")
                 params.append(rank_to)
+            
+            if conditions:
+                query += " WHERE " + " AND ".join(conditions)
             
             query += " ORDER BY rank ASC"
             
-            if limit:
+            if limit is not None:
                 query += " LIMIT ?"
                 params.append(limit)
             
@@ -121,52 +116,57 @@ class BGGDatabase:
             game_name: Game name
             
         Returns:
-            Generated BGG URL
+            BGG URL for the game
         """
-        # Convert game name to URL-friendly format
-        url_name = game_name.lower().replace(' ', '-').replace(':', '').replace("'", '')
-        return f"https://boardgamegeek.com/boardgame/{game_id}/{url_name}"
+        # Clean game name for URL
+        clean_name = game_name.replace(" ", "+").replace(":", "%3A")
+        return f"https://boardgamegeek.com/boardgame/{game_id}/{clean_name}"
     
-    def get_statistics(self) -> dict:
+    def get_game_by_name(self, game_name: str) -> Optional[Game]:
         """
-        Get statistics about games in the database.
+        Retrieve a specific game by name.
         
+        Args:
+            game_name: Game name
+            
         Returns:
-            Dictionary with statistics
+            Game object if found, None otherwise
         """
         try:
-            # Ensure database exists
-            if not self.db_path.exists():
-                logger.info(f"Database not found at {self.db_path}, creating it...")
-                create_database(str(self.db_path))
-            
-            # Get total games from database
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(str(self.db_path))
             cursor = conn.cursor()
             
             # Check if games table exists
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='games'")
-            table_exists = cursor.fetchone() is not None
-            
-            if not table_exists:
+            cursor.execute("""
+                SELECT name FROM sqlite_master 
+                WHERE type='table' AND name='games'
+            """)
+            if not cursor.fetchone():
                 logger.info("Games table doesn't exist, creating database...")
-                conn.close()
                 create_database(str(self.db_path))
-                conn = sqlite3.connect(self.db_path)
+                conn = sqlite3.connect(str(self.db_path))
                 cursor = conn.cursor()
             
-            cursor.execute("SELECT COUNT(*) FROM games")
-            total_games = cursor.fetchone()[0]
+            cursor.execute("""
+                SELECT bgg_id, name, rank, url, publisher, year_published 
+                FROM games 
+                WHERE name = ?
+            """, (game_name,))
+            
+            row = cursor.fetchone()
             conn.close()
             
-            stats = {
-                'total_games_in_db': total_games,
-            }
-            
-            return stats
+            if row:
+                return Game(
+                    id=str(row[0]),
+                    name=row[1],
+                    rank=row[2],
+                    url=row[3] if row[3] else self._generate_bgg_url(str(row[0]), row[1]),
+                    publisher=row[4],
+                    year_published=row[5]
+                )
+            return None
             
         except Exception as e:
-            logger.error(f"Error getting statistics: {e}")
-            return {}
-    
-
+            logger.error(f"Error retrieving game by name from database: {e}")
+            return None

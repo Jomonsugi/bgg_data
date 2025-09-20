@@ -27,11 +27,13 @@ def load_model_config(config_path: Optional[str]) -> dict:
     The config maps tasks (e.g., exploration LLM, official VLM) to model IDs
     and providers so we can change models without editing code.
     """
+    # If no path provided, fall back to bundled model_config.json next to this file
     if not config_path:
-        raise RuntimeError("model_config_path is required; pass --model-config to the CLI.")
-    p = Path(config_path)
+        p = Path(__file__).resolve().parent / "model_config.json"
+    else:
+        p = Path(config_path)
     if not p.exists():
-        raise RuntimeError(f"model_config.json not found at: {config_path}")
+        raise RuntimeError(f"model_config.json not found at: {p}")
     with open(p, "r") as f:
         return json.load(f)
 
@@ -41,7 +43,6 @@ class GamesFound(Event):
     """Event carrying the games to process and runtime settings."""
     games: List[dict]
     out_dir: str
-    model_config_path: Optional[str] = None
 
 # Removed unused event classes
 
@@ -584,7 +585,5 @@ def do_query_games(ev: Event) -> GamesFound:
     limit = _g("limit", None)
     default_out = Path(__file__).resolve().parent / "rulebooks"
     out_dir = str(_g("out_dir", str(default_out)))
-    model_config_path = _g("model_config", None)
-
     games = query_games_by_rank(db_path, rank_from, rank_to, limit)
-    return GamesFound(games=games, out_dir=out_dir, model_config_path=model_config_path)
+    return GamesFound(games=games, out_dir=out_dir)

@@ -17,7 +17,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--out-dir", type=Path, default=default_out, help="Download directory")
     p.add_argument("--limit", type=int, default=None, help="Optional max number of games")
     p.add_argument("--verbose", action="store_true", help="Enable workflow verbose logs")
-    p.add_argument("--model-config", type=Path, default=None, help="Path to JSON model config (overrides bundled)")
+    # Removed --model-config; model_config.json bundled with the package is always used
     return p.parse_args()
 
 
@@ -32,7 +32,7 @@ async def _amain(args: argparse.Namespace) -> None:
         db_path=str(args.db_path),
         out_dir=str(args.out_dir),
         limit=args.limit,
-        model_config=str(args.model_config) if args.model_config else None,
+        model_config=None,
     )
     print(result)
 

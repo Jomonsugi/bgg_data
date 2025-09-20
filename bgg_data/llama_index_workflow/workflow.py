@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import dataclass
+from typing import Optional, Tuple
+from urllib.parse import urlparse
 from llama_index.core.workflow import Workflow, step, StartEvent, StopEvent
 
 from .tools import (
@@ -16,6 +19,24 @@ from .tools import (
     load_model_config,
     explore_site_for_pdfs,
 )
+
+# Selection labels (for logging consistency)
+SELECT_DIRECT = "direct_initial"
+SELECT_EN_BIAS = "direct_english_bias"
+SELECT_AGENT = "agentic_exploration"
+
+
+@dataclass
+class GameCtx:
+    """Per-game context to keep helper signatures short and state isolated."""
+    name: str
+    publisher: str
+    out_dir: str
+    config: dict
+    tried_urls: set
+    language_log: dict
+    official_log: dict
+    pdf_find: dict
 
 class RulebookWorkflow(Workflow):
     """Query games, search for rulebook PDFs, validate, and save.
@@ -37,7 +58,7 @@ class RulebookWorkflow(Workflow):
     async def process(self, ev: GamesFound) -> StopEvent:  # type: ignore[override]
         """Process each game: search, validate, and save a rulebook PDF if found."""
         results = []
-        config = load_model_config(ev.model_config_path)
+        config = load_model_config(None)
         
         # Check which rulebooks already exist
         existing_rulebooks = self._check_existing_rulebooks(ev.games, ev.out_dir)
@@ -53,149 +74,46 @@ class RulebookWorkflow(Workflow):
         for i, game in enumerate(games_to_process, 1):
             name = game.get("name")
             rank = game.get("rank")
-            
-            
+
             print(f"\n[{i}/{len(games_to_process)}] Processing: {name} (Rank {rank})")
-            
+
             # Get publisher information
             publisher = game.get("publisher", "")
             if publisher:
                 print(f"  🏢 Publisher: {publisher}")
-            
+
             # Agentic retry loop - try different URLs from search results; adapt queries; explore sites
             file_path = None
+
+            # Initialize logs and search context
             language_log = {"ok": False, "reason": "", "method": ""}
             official_log = {"ok": False, "reason": "", "method": ""}
-            
-            # Get all search candidates once
             pdf_find = find_pdf_for_game(name, publisher, config)
             all_candidates = pdf_find.get("log", {}).get("candidates", [])
             pdf_candidates = [url for url in all_candidates if url.lower().endswith(".pdf")]
             tried_urls = set()
-            
-            def _try_validate_pdf(pdf_url: str) -> bool:
-                nonlocal file_path, language_log, official_log
-                if not pdf_url or pdf_url in tried_urls:
-                    return False
-                tried_urls.add(pdf_url)
-                
-                print(f"  🔗 Found PDF URL: {pdf_url}")
-                print(f"  📥 Downloading...")
-                
-                # Download to temp (always)
-                tmp = download_pdf(pdf_url, Path(ev.out_dir), f"{name}_rulebook.tmp")
-                if not tmp or not tmp.exists():
-                    print(f"  ❌ Download failed")
-                    return False
-                
-                print(f"  ✅ Downloaded successfully")
-                
-                # Language check using langdetect
-                print(f"  🌐 Checking language...")
-                text = extract_first_pages_text(tmp)
-                language_log = is_english_text(text)
-                
-                if not language_log.get("ok"):
-                    print(f"  ❌ Language check failed: {language_log['reason']}")
-                    # Clean up temp file
-                    try:
-                        tmp.unlink()
-                    except Exception:
-                        pass
-                    return False
-                
-                print(f"  ✅ Language check passed: {language_log['reason']}")
-                
-                # Officialness check using VLM on first page image
-                print(f"  🖼️  Rendering first page image...")
-                img_path = render_first_page_image(tmp)
-                if not img_path:
-                    official_log = {"ok": False, "reason": "Failed to render first page image", "method": "vlm_vision"}
-                    print(f"  ❌ Failed to render first page image")
-                    # Clean up temp file
-                    try:
-                        tmp.unlink()
-                    except Exception:
-                        pass
-                    return False
-                
-                print(f"  🤖 Checking if official rulebook...")
-                official_log = looks_like_official_rulebook(img_path, name, config)
-                print(f"  {'✅' if official_log.get('ok') else '❌'} Official check: {official_log.get('reason', 'Unknown')}")
-                
-                # Clean up image file
-                try:
-                    img_path.unlink()
-                except Exception:
-                    pass
-                
-                if not official_log.get("ok"):
-                    print(f"  ❌ Rulebook rejected: {official_log.get('reason', 'Unknown reason')}")
-                    # Clean up temp file
-                    try:
-                        tmp.unlink()
-                    except Exception:
-                        pass
-                    return False
-                
-                # Success! Move tmp to final (rename and remove .tmp)
-                clean_name = name.replace(" ", "_").replace(":", "_")
-                final = Path(ev.out_dir) / f"{clean_name}_rulebook.pdf"
-                try:
-                    tmp.replace(final)
-                    file_path = final
-                    print(f"  ✅ Rulebook saved: {file_path}")
-                    return True
-                except Exception as e:
-                    print(f"  ❌ Failed to rename file: {e}")
-                    # Clean up temp file
-                    try:
-                        tmp.unlink()
-                    except Exception:
-                        pass
-                    return False
+
+            ctx = GameCtx(
+                name=name,
+                publisher=publisher,
+                out_dir=ev.out_dir,
+                config=config,
+                tried_urls=tried_urls,
+                language_log=language_log,
+                official_log=official_log,
+                pdf_find=pdf_find,
+            )
 
             # 1) Try direct PDFs from initial search (ordered)
-            for pdf_url in pdf_candidates:
-                pdf_find["url"] = pdf_url
-                pdf_find["log"]["selected_from"] = "direct_initial"
-                if _try_validate_pdf(pdf_url):
-                    break
+            file_path = self._strategy_direct_initial(pdf_candidates, ctx)
             
             # 2) If not found, run an English-biased search and try new PDFs
             if not file_path:
-                try:
-                    eng_candidates = search_rulebook_urls(name, publisher, prefer_english=True)
-                    new_pdf_candidates = [u for u in eng_candidates if u.lower().endswith(".pdf") and u not in tried_urls]
-                    for pdf_url in new_pdf_candidates:
-                        pdf_find["url"] = pdf_url
-                        pdf_find["log"]["selected_from"] = "direct_english_bias"
-                        if _try_validate_pdf(pdf_url):
-                            break
-                except Exception:
-                    pass
+                file_path = self._strategy_english_bias(ctx)
             
             # 3) If still not found, explore top website candidates and try discovered PDFs
             if not file_path:
-                site_candidates = [u for u in all_candidates if not u.lower().endswith(".pdf")]
-                for site_url in site_candidates[:3]:
-                    try:
-                        print(f"  🤖 Exploring site: {site_url}")
-                        pdf_links = explore_site_for_pdfs(site_url, name, config)
-                        if pdf_links:
-                            # Extend candidates for logging and try these PDFs
-                            pdf_find["log"]["candidates"].extend(pdf_links[:3])
-                            for pdf_url in pdf_links:
-                                if pdf_url in tried_urls:
-                                    continue
-                                pdf_find["url"] = pdf_url
-                                pdf_find["log"]["selected_from"] = "agentic_exploration"
-                                if _try_validate_pdf(pdf_url):
-                                    break
-                    except Exception:
-                        continue
-                    if file_path:
-                        break
+                file_path = await self._strategy_agentic_exploration(all_candidates, ctx)
             
             if not file_path:
                 print(f"  ❌ Failed to find valid rulebook after trying available strategies")
@@ -203,12 +121,12 @@ class RulebookWorkflow(Workflow):
             results.append({
                 "game": name,
                 "rank": rank,
-                "pdf_url": pdf_find.get("url") or "",
+                "pdf_url": ctx.pdf_find.get("url") or "",
                 "file_path": str(file_path) if file_path else "",
                 "log": {
-                    **pdf_find.get("log", {}),
-                    "language_check": language_log,
-                    "official_check": official_log,
+                    **ctx.pdf_find.get("log", {}),
+                    "language_check": ctx.language_log,
+                    "official_check": ctx.official_log,
                     "decision": "saved" if file_path else "skipped",
                 },
             })
@@ -226,6 +144,197 @@ class RulebookWorkflow(Workflow):
             
         return StopEvent(result=results)
     
+    def _strategy_direct_initial(self, pdf_candidates, ctx: GameCtx) -> Optional[Path]:
+        """Try direct PDFs from initial search (ordered)."""
+        for pdf_url in pdf_candidates:
+            ctx.pdf_find["url"] = pdf_url
+            ctx.pdf_find["log"]["selected_from"] = SELECT_DIRECT
+            ok, saved_path = self._try_validate_pdf(
+                pdf_url,
+                ctx.out_dir,
+                ctx.name,
+                ctx.config,
+                ctx.tried_urls,
+                ctx.language_log,
+                ctx.official_log,
+            )
+            if ok:
+                return saved_path
+        return None
+
+    def _strategy_english_bias(self, ctx: GameCtx) -> Optional[Path]:
+        """Run an English-biased search and try new PDFs."""
+        try:
+            eng_candidates = search_rulebook_urls(ctx.name, ctx.publisher, prefer_english=True)
+            new_pdf_candidates = [u for u in eng_candidates if u.lower().endswith(".pdf") and u not in ctx.tried_urls]
+            for pdf_url in new_pdf_candidates:
+                ctx.pdf_find["url"] = pdf_url
+                ctx.pdf_find["log"]["selected_from"] = SELECT_EN_BIAS
+                ok, saved_path = self._try_validate_pdf(
+                    pdf_url,
+                    ctx.out_dir,
+                    ctx.name,
+                    ctx.config,
+                    ctx.tried_urls,
+                    ctx.language_log,
+                    ctx.official_log,
+                )
+                if ok:
+                    return saved_path
+        except Exception:
+            pass
+        return None
+
+    async def _strategy_agentic_exploration(self, all_candidates, ctx: GameCtx) -> Optional[Path]:
+        """Explore top website candidates and try discovered PDFs."""
+        site_candidates = [u for u in all_candidates if not u.lower().endswith(".pdf")]
+        for site_url in site_candidates[:3]:
+            try:
+                # Try Context cache per-domain to avoid repeating exploration
+                domain = urlparse(site_url).netloc or site_url
+                cache_key = f"explore:{domain}"
+
+                cached_links = await self._ctx_get(cache_key, default=None)
+                if cached_links:
+                    pdf_links = cached_links
+                else:
+                    print(f"  🤖 Exploring site: {site_url}")
+                    pdf_links = explore_site_for_pdfs(site_url, ctx.name, ctx.config)
+                    if pdf_links:
+                        # Cache a bounded list to keep Context small
+                        await self._ctx_set(cache_key, pdf_links[:10])
+                if pdf_links:
+                    # Extend candidates for logging and try these PDFs
+                    ctx.pdf_find["log"]["candidates"].extend(pdf_links[:3])
+                    for pdf_url in pdf_links:
+                        if pdf_url in ctx.tried_urls:
+                            continue
+                        ctx.pdf_find["url"] = pdf_url
+                        ctx.pdf_find["log"]["selected_from"] = SELECT_AGENT
+                        ok, saved_path = self._try_validate_pdf(
+                            pdf_url,
+                            ctx.out_dir,
+                            ctx.name,
+                            ctx.config,
+                            ctx.tried_urls,
+                            ctx.language_log,
+                            ctx.official_log,
+                        )
+                        if ok:
+                            return saved_path
+            except Exception:
+                continue
+        return None
+
+    async def _ctx_get(self, key: str, default=None):
+        """Safe Context getter; returns default if Context not available."""
+        ctx = getattr(self, "ctx", None)
+        if ctx is None:
+            return default
+        try:
+            return await ctx.get(key, default=default)
+        except Exception:
+            return default
+
+    async def _ctx_set(self, key: str, value) -> None:
+        """Safe Context setter; no-op if Context not available."""
+        ctx = getattr(self, "ctx", None)
+        if ctx is None:
+            return
+        try:
+            await ctx.set(key, value)
+        except Exception:
+            return
+
+    def _try_validate_pdf(self, pdf_url: str, out_dir: str, name: str, config: dict, tried_urls: set, language_log: dict, official_log: dict) -> tuple[bool, Optional[Path]]:
+        """Download, validate, and save a PDF if it passes all checks.
+
+        Returns (ok: bool, saved_path: Optional[Path]).
+        """
+
+        if not pdf_url or pdf_url in tried_urls:
+            return False, None
+        tried_urls.add(pdf_url)
+
+        print(f"  🔗 Found PDF URL: {pdf_url}")
+        print(f"  📥 Downloading...")
+
+        # Download to temp (always)
+        tmp = download_pdf(pdf_url, Path(out_dir), f"{name}_rulebook.tmp")
+        if not tmp or not tmp.exists():
+            print(f"  ❌ Download failed")
+            return False, None
+
+        print(f"  ✅ Downloaded successfully")
+
+        # Language check using langdetect
+        print(f"  🌐 Checking language...")
+        text = extract_first_pages_text(tmp)
+        # preserve external reference by clearing and updating
+        language_log.clear()
+        language_log.update(is_english_text(text))
+
+        if not language_log.get("ok"):
+            print(f"  ❌ Language check failed: {language_log['reason']}")
+            # Clean up temp file
+            try:
+                tmp.unlink()
+            except Exception:
+                pass
+            return False, None
+
+        print(f"  ✅ Language check passed: {language_log['reason']}")
+
+        # Officialness check using VLM on first page image
+        print(f"  🖼️  Rendering first page image...")
+        img_path = render_first_page_image(tmp)
+        if not img_path:
+            official_log.clear()
+            official_log.update({"ok": False, "reason": "Failed to render first page image", "method": "vlm_vision"})
+            print(f"  ❌ Failed to render first page image")
+            # Clean up temp file
+            try:
+                tmp.unlink()
+            except Exception:
+                pass
+            return False, None
+
+        print(f"  🤖 Checking if official rulebook...")
+        official_log.clear()
+        official_log.update(looks_like_official_rulebook(img_path, name, config))
+        print(f"  {'✅' if official_log.get('ok') else '❌'} Official check: {official_log.get('reason', 'Unknown')}")
+
+        # Clean up image file
+        try:
+            img_path.unlink()
+        except Exception:
+            pass
+
+        if not official_log.get("ok"):
+            print(f"  ❌ Rulebook rejected: {official_log.get('reason', 'Unknown reason')}")
+            # Clean up temp file
+            try:
+                tmp.unlink()
+            except Exception:
+                pass
+            return False, None
+
+        # Success! Move tmp to final (rename and remove .tmp)
+        clean_name = self._clean_name_for_file(name)
+        final = Path(out_dir) / f"{clean_name}_rulebook.pdf"
+        try:
+            tmp.replace(final)
+            print(f"  ✅ Rulebook saved: {final}")
+            return True, final
+        except Exception as e:
+            print(f"  ❌ Failed to rename file: {e}")
+            # Clean up temp file
+            try:
+                tmp.unlink()
+            except Exception:
+                pass
+            return False, None
+
     def _check_existing_rulebooks(self, games: list, out_dir: str) -> list:
         """Check which rulebooks already exist in the output directory."""
         existing = []
@@ -234,9 +343,13 @@ class RulebookWorkflow(Workflow):
             name = game.get("name")
             if name:
                 # Check for both .pdf and .tmp.pdf files
-                clean_name = name.replace(" ", "_").replace(":", "_")
+                clean_name = self._clean_name_for_file(name)
                 pdf_file = out_path / f"{clean_name}_rulebook.pdf"
                 tmp_file = out_path / f"{clean_name}_rulebook.tmp.pdf"
                 if pdf_file.exists() or tmp_file.exists():
                     existing.append(name)
         return existing
+
+    def _clean_name_for_file(self, name: str) -> str:
+        """Normalize a game name for filesystem usage (preserves prior behavior)."""
+        return name.replace(" ", "_").replace(":", "_")
