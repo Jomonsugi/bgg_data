@@ -7,9 +7,8 @@
     "model_id": "meta-llama/Llama-3.2-3B-Instruct",
     "provider": "auto"
   },
-  "official_vlm": {
-    "model_id": "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+  "vlm": {
+    "model_id": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
     "provider": "together"
   }
 }
-

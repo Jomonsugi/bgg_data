@@ -11,6 +11,8 @@ import fitz  # PyMuPDF
 from tavily import TavilyClient
 from workflows.events import Event
 import json
+import base64
+import subprocess
 from langdetect import detect, DetectorFactory
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -22,10 +24,9 @@ DetectorFactory.seed = 0
 # --- Model configuration (JSON only) ---
 
 def load_model_config(config_path: Optional[str]) -> dict:
-    """Load the model configuration JSON from the given path.
+    """Load model_config.json with support for // comments.
 
-    The config maps tasks (e.g., exploration LLM, official VLM) to model IDs
-    and providers so we can change models without editing code.
+    The config maps tasks (e.g., exploration LLM, VLM) to model IDs and providers.
     """
     # If no path provided, fall back to bundled model_config.json next to this file
     if not config_path:
@@ -34,8 +35,20 @@ def load_model_config(config_path: Optional[str]) -> dict:
         p = Path(config_path)
     if not p.exists():
         raise RuntimeError(f"model_config.json not found at: {p}")
-    with open(p, "r") as f:
-        return json.load(f)
+    text = p.read_text()
+    # Strip // line and inline comments for convenience
+    cleaned_lines = []
+    for line in text.splitlines():
+        # Remove inline // comments (not a full JSON5 parser, but fine for this file)
+        if "//" in line:
+            line = line.split("//", 1)[0]
+        if line.strip():
+            cleaned_lines.append(line)
+    cleaned = "\n".join(cleaned_lines)
+    # Remove trailing commas before closing braces/brackets
+    import re as _re
+    cleaned = _re.sub(r",\s*([}\]])", r"\1", cleaned)
+    return json.loads(cleaned)
 
 # --- Data types ---
 
@@ -173,6 +186,78 @@ def search_rulebook_urls(
     
     # Return PDFs first (so the agent can validate quickly), then official pages, then others
     return pdf_urls + official_urls + other_urls[:10]
+
+def _publisher_domain_guess(publisher: str) -> str:
+    p = publisher.lower().strip()
+    for token in (" llc", " inc", ",", ".", " games", " game"):
+        p = p.replace(token, "")
+    p = p.replace(" ", "")
+    if p and not p.endswith(".com"):
+        p = p + ".com"
+    return p
+
+def staged_search_candidates(game_name: str, publisher: str | None, stage: int, max_results: int = 5) -> List[str]:
+    """Run exactly one Tavily query per stage and return raw URLs.
+
+    stage 1: "<game> official rulebook"
+    stage 2: "<game> official rulebook pdf"
+    stage 3: "site:<publisher-domain> <game> rulebook pdf" (if publisher provided)
+    """
+    tavily = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
+    if stage == 1:
+        query = f"{game_name} official rulebook"
+    elif stage == 2:
+        query = f"{game_name} official rulebook pdf"
+    else:
+        if not publisher:
+            return []
+        domain = _publisher_domain_guess(publisher)
+        query = f"site:{domain} {game_name} rulebook pdf"
+    try:
+        resp = tavily.search(query=query, search_depth="basic", max_results=max_results)
+        results = resp.get("results", [])
+        urls: List[str] = []
+        for r in results:
+            u = r.get("url", "")
+            if u:
+                urls.append(u)
+        # return de-duplicated in order
+        seen = set()
+        ordered: List[str] = []
+        for u in urls:
+            if u not in seen:
+                seen.add(u)
+                ordered.append(u)
+        return ordered
+    except Exception:
+        return []
+
+def rank_candidates_llm(game_name: str, publisher: str | None, candidates: List[str], config: dict) -> List[str]:
+    """Use a small LLM to rank candidates by likelihood of being the official core rulebook."""
+    if not candidates:
+        return []
+    try:
+        model_id, provider = get_exploration_llm_config(config)
+        pub = publisher or ""
+        prompt = (
+            f"Given a board game titled '{game_name}' by publisher '{pub}', rank these URLs by likelihood of being the OFFICIAL CORE RULEBOOK PDF for that game.\n"
+            "Prefer publisher/CDN domains and URLs explicitly indicating 'rulebook' for the base game (not reference/learn-to-play/FAQ/expansion).\n"
+            "Return ONLY a JSON list of the same URLs in best-first order, no extra text.\n"
+            f"URLs: {candidates[:10]}\n"
+        )
+        response = generate_text(prompt, model_id, provider)
+        import json as _json
+        ranked_resp = _json.loads(response)
+        if isinstance(ranked_resp, list) and all(isinstance(u, str) for u in ranked_resp):
+            seen = set()
+            ranked = [u for u in ranked_resp if u in candidates and not (u in seen or seen.add(u))]
+            for u in candidates:
+                if u not in seen:
+                    ranked.append(u)
+            return ranked
+    except Exception:
+        pass
+    return candidates
 
 def download_pdf(url: str, out_dir: Path, filename_stem: str) -> Optional[Path]:
     """Download a PDF (or an HTML page linking to one) to out_dir.
@@ -359,84 +444,67 @@ def explore_site_for_pdfs(url: str, game_name: str, config: dict) -> List[str]:
 def find_pdf_for_game(game_name: str, publisher: str = None, config: dict = None) -> dict:
     """Find one candidate URL for a game's rulebook.
 
-    Uses search first (preferring PDFs), then explores likely sites to
-    extract PDF links. The workflow will validate and iterate candidates.
+    PRIMARY: Use staged search with LLM re-ranking (one Tavily call per stage)
+    to mirror the manual strategy that works reliably. Only if that yields
+    no direct PDF do we fall back to exploring likely sites discovered in
+    the staged search results.
     """
     log: dict = {"queries": [], "candidates": [], "selected_from": "none"}
-    
-    # Get search candidates using publisher information
-    candidates = search_rulebook_urls(game_name, publisher)
-    log["queries"] = [
-        f"{game_name} rulebook filetype:pdf",
-        f"{game_name} \"rulebook pdf\"",
-        f"{game_name} \"rules pdf\"",
-        f"{game_name} rulebook site:boardgamegeek.com filetype:pdf",
-        f"{game_name} official site rulebook pdf",
-    ]
-    if publisher:
-        log["queries"].extend([
-            f"{game_name} rulebook site:{publisher.lower().replace(' ', '')}.com",
-            f"{game_name} {publisher} official rulebook",
-            f"{publisher} {game_name} rulebook pdf",
-        ])
-    log["candidates"] = candidates[:10]
 
-    # Try direct PDF links first (validation happens later)
-    for url in candidates:
-        if url.lower().endswith(".pdf"):
-            log["selected_from"] = "direct"
-            return {"url": url, "log": log}
+    staged_non_pdf_urls: list[str] = []
 
-    # Explore likely sites and try PDFs found there
-    if config:
-        for url in candidates[:3]:  # Try first 3 candidates (should be official sites)
-            if url and not url.lower().endswith(".pdf") and "boardgamegeek.com" not in url.lower():
-                try:
-                    print(f"  🤖 Exploring site: {url}")
-                    pdf_links = explore_site_for_pdfs(url, game_name, config)
-                    if pdf_links:
-                        log["selected_from"] = "agentic_exploration"
-                        log["candidates"].extend(pdf_links[:3])  # Add found PDFs to candidates
-                        return {"url": pdf_links[0], "log": log}
-                except Exception as e:
-                    print(f"  ⚠️  Agentic exploration failed: {e}")
-                    continue
+    # Staged search with LLM re-rank, one Tavily call per stage
+    for stage in (1, 2, 3):
+        stage_urls = staged_search_candidates(game_name, publisher, stage)
+        if not stage_urls:
+            continue
 
-    # Fallback: try simple PDF extraction from remaining websites
-    for url in candidates[:3]:  # Try first 3 candidates
-        if url and not url.lower().endswith(".pdf") and "boardgamegeek.com" not in url.lower():
+        # Record the exact staged query used
+        if stage == 1:
+            log["queries"].append(f"{game_name} official rulebook")
+        elif stage == 2:
+            log["queries"].append(f"{game_name} official rulebook pdf")
+        else:
+            domain = _publisher_domain_guess(publisher) if publisher else ""
+            log["queries"].append(f"site:{domain} {game_name} rulebook pdf")
+
+        ranked = rank_candidates_llm(game_name, publisher, stage_urls, config or {}) if config else stage_urls
+        # Keep a short list of surfaced candidates for debugging
+        log.setdefault("candidates", []).extend(stage_urls[:3])
+
+        # Prefer direct PDFs first
+        for url in ranked:
+            if url.lower().endswith(".pdf"):
+                log["selected_from"] = f"staged_{stage}"
+                return {"url": url, "log": log}
+
+        # Collect non-PDF URLs to explore if we didn't find a PDF this stage
+        for url in ranked:
+            if not url.lower().endswith(".pdf"):
+                staged_non_pdf_urls.append(url)
+
+    # Agentic exploration of promising non-PDF staged results (publisher pages, resources, etc.)
+    if config and staged_non_pdf_urls:
+        for url in staged_non_pdf_urls[:3]:
+            if "boardgamegeek.com" in url.lower():
+                # Skip BGG file listings; they are often noisy. We focus on publisher/official CDs.
+                continue
             try:
-                print(f"  🔍 Simple extraction from: {url}")
-                session = requests.Session()
-                session.headers.update({
-                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36"
-                })
-                
-                response = session.get(url, timeout=15)
-                response.raise_for_status()
-                html = response.text
-                
-                # Find PDF links
-                pdf_links = []
-                pdf_matches = re.findall(r'href=["\']([^"\']*\.pdf)["\']', html, re.IGNORECASE)
-                for link in pdf_matches:
-                    if not link.startswith("http"):
-                        from urllib.parse import urljoin
-                        link = urljoin(url, link)
-                    pdf_links.append(link)
-                
+                print(f"  🤖 Exploring site: {url}")
+                pdf_links = explore_site_for_pdfs(url, game_name, config)
                 if pdf_links:
-                    log["selected_from"] = "simple_extraction"
+                    log["selected_from"] = "agentic_exploration"
                     log["candidates"].extend(pdf_links[:3])
                     return {"url": pdf_links[0], "log": log}
-            except Exception:
+            except Exception as e:
+                print(f"  ⚠️  Agentic exploration failed: {e}")
                 continue
 
-    # If still no PDFs, try the first candidate (might be a page with PDF links)
-    if candidates:
-        log["selected_from"] = "first_candidate"
-        return {"url": candidates[0], "log": log}
-    
+    # As a last resort, return the first staged URL to allow downstream simple extraction
+    if staged_non_pdf_urls:
+        log["selected_from"] = "staged_first_non_pdf"
+        return {"url": staged_non_pdf_urls[0], "log": log}
+
     return {"url": None, "log": log}
 
 # --- Validation helpers ---
@@ -461,7 +529,7 @@ def extract_first_pages_text(pdf_path: Path, max_pages: int = 2, max_chars: int 
     text = "\n".join(text_parts)
     return text[:max_chars]
 
-def render_first_page_image(pdf_path: Path, dpi: int = 150) -> Optional[Path]:
+def render_first_page_image(pdf_path: Path, dpi: int = 256) -> Optional[Path]:
     """Render the first page of a PDF to a PNG image and return its path."""
     try:
         doc = fitz.open(str(pdf_path))
@@ -503,15 +571,18 @@ def looks_like_official_rulebook(image_path: Path, game_name: str, config_dict: 
     try:
         vlm_model_id, vlm_provider = get_official_vlm_config(config_dict)
         
-        # Simple, direct prompt with explicit format instruction
-        prompt = f"You are a board game rulebook classifier. Look at this image and determine if it shows a board game rulebook page. Only respond with one word: 'YES' or 'NO'."
+        # Stricter prompt to match the correct game's official core rulebook
+        prompt = (
+            f"Does this look like a rulebook for the board game '{game_name}'? "
+            "Give a one word answer: \"YES\" or \"NO\"."
+        )
         
         # Use VLM to analyze the image
         response = classify_image_with_vlm(image_path, prompt, vlm_model_id, vlm_provider)
         
-        # Simple parsing - look for YES or NO
+        # Strict parsing: require exact YES
         response_upper = response.upper().strip()
-        is_rulebook = "YES" in response_upper
+        is_rulebook = response_upper == "YES"
         
         return {
             "ok": is_rulebook,
@@ -526,11 +597,17 @@ def looks_like_official_rulebook(image_path: Path, game_name: str, config_dict: 
         }
 
 def get_official_vlm_config(config: dict) -> tuple[str, Optional[str]]:
-    """Return (model_id, provider) for the VLM used in officialness checks."""
-    entry = config.get("official_vlm")
-    if not entry or not entry.get("model_id"):
-        raise RuntimeError("model_config.json missing official_vlm.model_id")
-    return entry["model_id"], entry.get("provider")
+    """Return (model_id, provider) for the VLM to use, based on the single 'vlm' key.
+
+    model_config.json format:
+      "vlm": { "model_id": "...", "provider": "together" | "local" }
+    """
+    entry = config.get("vlm") or {}
+    model_id = entry.get("model_id")
+    provider = (entry.get("provider") or "").lower() or None
+    if not model_id or not provider:
+        raise RuntimeError("model_config.json must include vlm.model_id and vlm.provider")
+    return model_id, provider
 
 def get_exploration_llm_config(config: dict) -> tuple[str, Optional[str]]:
     """Return (model_id, provider) for the LLM used to guide navigation."""
@@ -556,17 +633,107 @@ def generate_text(prompt: str, model_id: str, provider: Optional[str]) -> str:
     return str(result)
 
 def classify_image_with_vlm(image_path: Path, prompt: str, model_id: str, provider: Optional[str]) -> str:
-    """Call a VLM on the image + prompt and return the raw string result."""
+    """Call a VLM with the image payload and return the raw string result.
+
+    Supports:
+    - provider == "together": OpenAI-compatible chat.completions with input_image (data URL)
+    - provider == "local": MLX via mlx_lm.generate CLI (best-effort)
+    - otherwise: smolagents InferenceClientModel fallback
+    """
     if not model_id:
         raise RuntimeError("VLM model_id is required")
-    provider = provider or ""
-    if provider.lower() == "local":
-        raise RuntimeError("Local VLM provider not implemented. Set official_vlm.provider to a remote provider (e.g., together).")
-    from smolagents import InferenceClientModel
+    provider = (provider or "").lower()
 
-    model = InferenceClientModel(model_id=model_id, provider=provider)
-    result = model.generate([{"role": "user", "content": f"{prompt}\nImage path: {image_path}"}])
-    return str(result)
+    # Read image bytes and encode as base64
+    img_b64 = None
+    try:
+        with open(image_path, "rb") as f:
+            img_b64 = base64.b64encode(f.read()).decode("utf-8")
+    except Exception:
+        img_b64 = None
+
+    # Remote via Hugging Face InferenceClient routed to Together (OpenAI-compatible)
+    if provider in ("together", "auto", ""):
+        if not img_b64:
+            raise RuntimeError("Failed to read image for VLM")
+        try:
+            from huggingface_hub import InferenceClient  # type: ignore
+        except Exception as e:
+            return f"ERROR: huggingface_hub not installed: {e}"
+        api_key = os.getenv("HUGGING_FACE_HUB_TOKEN") or os.getenv("TOGETHER_API_KEY")
+        if not api_key:
+            return "ERROR: Missing HUGGING_FACE_HUB_TOKEN (or TOGETHER_API_KEY)"
+        try:
+            client = InferenceClient(provider="together", api_key=api_key)
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
+                    ],
+                }
+            ]
+            completion = client.chat.completions.create(
+                model=model_id,
+                messages=messages,
+                max_tokens=1,
+                temperature=0,
+            )
+            choice = completion.choices[0]
+            content = getattr(choice.message, "content", None)
+            if not content and getattr(choice, "messages", None):
+                content = choice.messages[0].get("content", "")
+            return content or ""
+        except Exception as e:
+            return f"ERROR: {e}"
+
+    # Local MLX path via mlx-vlm Python API (requires: pip install mlx-vlm)
+    if provider == "local":
+        try:
+            from mlx_vlm import load as mlx_load, generate as mlx_generate  # type: ignore
+            from PIL import Image
+        except Exception as e:
+            return f"ERROR: mlx-vlm or PIL not installed: {e}"
+        try:
+            model, processor = mlx_load(model_id)
+            # Load image as PIL Image object
+            image = Image.open(image_path).convert("RGB")
+            # Many MLX vision models expect the <image> token in the chat template
+            user_content = f"<image>\n{prompt}"
+            chat = [{"role": "user", "content": user_content}]
+            try:
+                chat_prompt = processor.tokenizer.apply_chat_template(
+                    chat, tokenize=False, add_generation_prompt=True
+                )
+            except Exception:
+                chat_prompt = user_content
+            # Process image and text together, then generate
+            inputs = processor(text=chat_prompt, images=[image])
+            out = mlx_generate(model, processor, prompt=chat_prompt, images=[image], verbose=False, max_tokens=10)
+            # Extract text from GenerationResult if it's wrapped
+            if hasattr(out, 'text'):
+                return out.text
+            return str(out)
+        except Exception as e:
+            return f"ERROR: {e}"
+
+    # Fallback: smolagents (may or may not support multimodal depending on provider)
+    try:
+        from smolagents import InferenceClientModel
+        model = InferenceClientModel(model_id=model_id, provider=provider)
+        if img_b64:
+            message = {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image", "image": f"data:image/png;base64,{img_b64}"},
+                ],
+            }
+            return str(model.generate([message]))
+        return str(model.generate([{"role": "user", "content": prompt}]))
+    except Exception as e:
+        return f"ERROR: {e}"
 
 # --- Helper function for workflow ---
 

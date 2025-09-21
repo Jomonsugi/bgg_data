@@ -153,6 +153,7 @@ class RulebookWorkflow(Workflow):
                 pdf_url,
                 ctx.out_dir,
                 ctx.name,
+                ctx.publisher,
                 ctx.config,
                 ctx.tried_urls,
                 ctx.language_log,
@@ -174,6 +175,7 @@ class RulebookWorkflow(Workflow):
                     pdf_url,
                     ctx.out_dir,
                     ctx.name,
+                    ctx.publisher,
                     ctx.config,
                     ctx.tried_urls,
                     ctx.language_log,
@@ -215,6 +217,7 @@ class RulebookWorkflow(Workflow):
                             pdf_url,
                             ctx.out_dir,
                             ctx.name,
+                            ctx.publisher,
                             ctx.config,
                             ctx.tried_urls,
                             ctx.language_log,
@@ -246,7 +249,7 @@ class RulebookWorkflow(Workflow):
         except Exception:
             return
 
-    def _try_validate_pdf(self, pdf_url: str, out_dir: str, name: str, config: dict, tried_urls: set, language_log: dict, official_log: dict) -> tuple[bool, Optional[Path]]:
+    def _try_validate_pdf(self, pdf_url: str, out_dir: str, name: str, publisher: str, config: dict, tried_urls: set, language_log: dict, official_log: dict) -> tuple[bool, Optional[Path]]:
         """Download, validate, and save a PDF if it passes all checks.
 
         Returns (ok: bool, saved_path: Optional[Path]).
@@ -270,11 +273,17 @@ class RulebookWorkflow(Workflow):
         # Language check using langdetect
         print(f"  🌐 Checking language...")
         text = extract_first_pages_text(tmp)
+        # If very short text, try reading more pages before detection
+        if len(text) < 100:
+            print(f"  ℹ️  Text short on first pages; extracting more pages for language check...")
+            text = extract_first_pages_text(tmp, max_pages=5, max_chars=2000)
+
         # preserve external reference by clearing and updating
         language_log.clear()
         language_log.update(is_english_text(text))
 
-        if not language_log.get("ok"):
+        lang_too_short = not language_log.get("ok") and "Text too short" in language_log.get("reason", "")
+        if not language_log.get("ok") and not lang_too_short:
             print(f"  ❌ Language check failed: {language_log['reason']}")
             # Clean up temp file
             try:
@@ -283,11 +292,52 @@ class RulebookWorkflow(Workflow):
                 pass
             return False, None
 
-        print(f"  ✅ Language check passed: {language_log['reason']}")
+        if language_log.get("ok"):
+            print(f"  ✅ Language check passed: {language_log['reason']}")
+        else:
+            # Only case here: lang_too_short == True
+            print(f"  ⚠️  Language check inconclusive (too short). Proceeding with VLM officialness check...")
+
+        # Quick acceptance via title + domain/filename trust before VLM
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(pdf_url)
+            host = (parsed.netloc or "").lower().replace("www.", "")
+            filename = (parsed.path.rsplit("/", 1)[-1] if parsed.path else "").lower()
+        except Exception:
+            host, filename = "", ""
+
+        # Normalize game title tokens (length >= 3) and check they appear in text
+        import re as _re
+        norm_text = _re.sub(r"[^a-z0-9 ]", " ", text.lower())
+        title_tokens = [t for t in _re.sub(r"[^a-z0-9 ]", " ", (name or "").lower()).split() if len(t) >= 3]
+        title_ok = all(tok in norm_text for tok in title_tokens) if title_tokens else False
+
+        # Domain trust based on publisher tokens
+        pub_tokens = [t for t in _re.sub(r"[^a-z0-9]", "", (publisher or "").lower()).split() if t]
+        domain_ok = any(t and t in host for t in pub_tokens) if pub_tokens else False
+
+        # Filename signals base rules
+        fname_ok = ("rulebook" in filename or "rules" in filename) and not any(bad in filename for bad in ("exp", "expansion", "learn", "reference"))
+
+        if title_ok and (domain_ok or fname_ok):
+            clean_name = self._clean_name_for_file(name)
+            final = Path(out_dir) / f"{clean_name}_rulebook.pdf"
+            try:
+                tmp.replace(final)
+                print(f"  ✅ Rulebook saved by title/domain/filename trust: {final}")
+                return True, final
+            except Exception as e:
+                print(f"  ❌ Failed to rename file: {e}")
+                try:
+                    tmp.unlink()
+                except Exception:
+                    pass
+                return False, None
 
         # Officialness check using VLM on first page image
         print(f"  🖼️  Rendering first page image...")
-        img_path = render_first_page_image(tmp)
+        img_path = render_first_page_image(tmp, dpi=300)
         if not img_path:
             official_log.clear()
             official_log.update({"ok": False, "reason": "Failed to render first page image", "method": "vlm_vision"})
@@ -318,6 +368,8 @@ class RulebookWorkflow(Workflow):
             except Exception:
                 pass
             return False, None
+        # If VLM says official but language was too short, accept based on VLM
+        # (no extra action needed; fall through to save)
 
         # Success! Move tmp to final (rename and remove .tmp)
         clean_name = self._clean_name_for_file(name)
