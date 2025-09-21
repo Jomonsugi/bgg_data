@@ -708,9 +708,16 @@ def classify_image_with_vlm(image_path: Path, prompt: str, model_id: str, provid
                 )
             except Exception:
                 chat_prompt = user_content
-            # Process image and text together, then generate
-            inputs = processor(text=chat_prompt, images=[image])
-            out = mlx_generate(model, processor, prompt=chat_prompt, images=[image], verbose=False, max_tokens=10)
+            # Generate with explicit image argument (single image) and low max tokens
+            out = mlx_generate(
+                model,
+                processor,
+                image=image,
+                prompt=chat_prompt,
+                verbose=False,
+                max_tokens=5,
+                temp=0.0,
+            )
             # Extract text from GenerationResult if it's wrapped
             if hasattr(out, 'text'):
                 return out.text

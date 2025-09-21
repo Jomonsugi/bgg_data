@@ -36,12 +36,11 @@ def make_number_pdf(out_path: Path, number_text: str = "42") -> Path:
 def run_once(image_path: Path, model_id: str, provider: str) -> str:
     if provider == "local":
         # Simpler prompt for local MLX models
-        prompt = "42"
+        prompt = "What number is shown in this image? Answer with only the number, nothing else."
     else:
         # More detailed prompt for remote models
         prompt = (
-            "What number is shown in this image? Answer with only the number, nothing else.\n"
-            "Example: 42"
+            "What number is shown in this image? Answer with only the number, nothing else."
         )
     return classify_image_with_vlm(image_path, prompt, model_id, provider)
 
