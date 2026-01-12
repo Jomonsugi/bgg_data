@@ -15,6 +15,19 @@ class BGGDataCollector:
     def __init__(self, db_path="bgg_games.db"):
         self.db_path = db_path
         self.base_url = "https://boardgamegeek.com/xmlapi2"
+        # Use a session with browser-like headers; BGG increasingly blocks the default python-requests UA.
+        self.session = requests.Session()
+        self.session.headers.update(
+            {
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/122.0 Safari/537.36"
+                ),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            }
+        )
         
     def get_top_games(self, limit=100, start_rank=1):
         """Get top games by rank from BGG rankings page."""
@@ -45,9 +58,7 @@ class BGGDataCollector:
             
             try:
                 logger.info(f"Scraping rankings page {page}...")
-                response = requests.get(url, headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-                })
+                response = self.session.get(url)
                 response.raise_for_status()
                 
                 soup = BeautifulSoup(response.content, 'html.parser')
@@ -77,7 +88,7 @@ class BGGDataCollector:
                         continue
                     
                     game_id = game_id_match.group(1)
-                    name = title_link.get_text(strip=True)
+                    name = title_link.get_text(strip=True) or title_link.get("title") or ""
                     
                     # Extract rank from the first column
                     cells = row.find_all('td')
@@ -119,7 +130,7 @@ class BGGDataCollector:
         }
         
         try:
-            response = requests.get(url, params=params)
+            response = self.session.get(url, params=params)
             response.raise_for_status()
             
             root = ET.fromstring(response.content)

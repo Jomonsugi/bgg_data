@@ -143,6 +143,10 @@ cython_debug/
 *.html
 *.htm
 
+# Rulebook agent artifacts
+bgg_data/rule_book_agent/rulebooks/
+bgg_data/rule_book_agent/runs/
+
 # Screenshots and logs
 /screenshots/
 *.log
