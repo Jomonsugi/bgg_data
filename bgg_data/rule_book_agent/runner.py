@@ -15,6 +15,7 @@ from bgg_data.database.operations import BGGDatabase
 from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langgraph.errors import GraphRecursionError
 
+from .config import default_db_path
 from .graph import create_graph
 from .runs import get_rulebooks_dir, init_run_dirs, make_run_id, write_json
 from .tools.browser_helpers import build_browser_helper_tools
@@ -69,11 +70,6 @@ def _invoke_graph_capture_last_state(graph, state: AgentState, config: RunnableC
         s = dict(last_state or state)
         s["error"] = {"type": "exception", "message": str(e)}
         return s  # type: ignore[return-value]
-
-
-def _default_db_path() -> str:
-    # bgg_data/bgg_data/rule_book_agent/runner.py -> project root is parents[2]
-    return str(Path(__file__).resolve().parents[2] / "bgg_games.db")
 
 
 def _load_chat_model():
@@ -131,12 +127,19 @@ def _build_tools():
 
 
 def _resolve_game(game_name: Optional[str], bgg_id: Optional[int], db_path: str):
+    """
+    Resolve a game from the database.
+    
+    If game is not found, returns a minimal Game object with id="0" (or the provided bgg_id).
+    The graph's ensure_game_in_db step will handle finding and adding it.
+    """
     if not db_path:
-        db_path = _default_db_path()
+        db_path = default_db_path()
 
     db = BGGDatabase(Path(db_path))
+    
+    # Try to find by bgg_id first
     if bgg_id is not None:
-        # Query directly without changing shared database module.
         conn = sqlite3.connect(str(db_path))
         cur = conn.cursor()
         cur.execute(
@@ -145,25 +148,48 @@ def _resolve_game(game_name: Optional[str], bgg_id: Optional[int], db_path: str)
         )
         row = cur.fetchone()
         conn.close()
-        if not row:
-            raise ValueError("bgg_id not found in DB")
+        
+        if row:
+            from bgg_data.database.models import Game
+            return Game(
+                id=str(row[0]),
+                name=row[1],
+                rank=row[2],
+                url=row[3],
+                publisher=row[4],
+                year_published=row[5],
+            )
+        
+        # Not found - return placeholder with the provided BGG ID
+        # The graph will fetch it directly using this ID
         from bgg_data.database.models import Game
-
         return Game(
-            id=str(row[0]),
-            name=row[1],
-            rank=row[2],
-            url=row[3],
-            publisher=row[4],
-            year_published=row[5],
+            id=str(bgg_id),  # Keep the provided ID - graph will use it directly
+            name=game_name or "Unknown",
+            rank=None,
+            url=f"https://boardgamegeek.com/boardgame/{bgg_id}",
+            publisher=None,
+            year_published=None
         )
 
     if not game_name:
         raise ValueError("Provide game_name or bgg_id")
+    
+    # Try to find by name
     game = db.get_game_by_name(game_name)
-    if not game:
-        raise ValueError("game_name not found in DB")
-    return game
+    if game:
+        return game
+    
+    # Not found - return placeholder, graph will handle it
+    from bgg_data.database.models import Game
+    return Game(
+        id="0",  # Placeholder - graph's ensure_game_in_db will find real ID
+        name=game_name,
+        rank=None,
+        url="",
+        publisher=None,
+        year_published=None
+    )
 
 
 def _existing_rulebook_paths(game_name: str, bgg_id: Optional[str]) -> list[str]:
@@ -191,7 +217,7 @@ def find_one(params: FindOneParams, parent_config: RunnableConfig | None = None)
     so the run becomes a child trace in LangSmith.
     """
     _ensure_langsmith_project_default()
-    db_path = params.db_path or _default_db_path()
+    db_path = params.db_path or default_db_path()
     game = _resolve_game(params.game_name, params.bgg_id, db_path)
 
     existing = _existing_rulebook_paths(game.name, str(game.id))
@@ -208,6 +234,7 @@ def find_one(params: FindOneParams, parent_config: RunnableConfig | None = None)
     state: AgentState = {
         "run_id": run_id,
         "run_dir": str(run_dir),
+        "db_path": db_path,  # Add this so ensure_game_in_db can use it
         "game": {
             "id": game.id,
             "name": game.name,
@@ -273,7 +300,7 @@ def find_batch(params: FindBatchParams) -> dict:
     - one child run per game (reusing callback manager)
     """
     _ensure_langsmith_project_default()
-    db_path = params.db_path or _default_db_path()
+    db_path = params.db_path or default_db_path()
 
     def _batch(_: dict, config: RunnableConfig) -> dict:
         db = BGGDatabase(Path(db_path))

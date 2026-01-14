@@ -44,6 +44,7 @@ class AgentState(TypedDict, total=False):
     game: GameInfo
     run_id: str
     run_dir: str
+    db_path: Optional[str]
 
     # Budgets / counters
     budgets: Budgets

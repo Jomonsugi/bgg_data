@@ -7,6 +7,17 @@ import os
 from bs4 import BeautifulSoup
 import re
 import json
+from pathlib import Path
+
+# Load environment variables from .env file if present
+try:
+    from dotenv import load_dotenv
+    # Try to find .env file in project root (bgg_data/)
+    env_path = Path(__file__).resolve().parents[2] / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
+except ImportError:
+    pass  # python-dotenv not available, rely on system env vars
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -139,12 +150,22 @@ class BGGDataCollector:
         
         try:
             # Add Authorization header for XML API requests if API key is available
-            # Format per BGG docs: "Authorization: Bearer <token>" (no colon after Bearer)
+            # Format per BGG docs: "Authorization: Bearer <token>"
             headers = {}
             if self.api_key:
                 headers["Authorization"] = f"Bearer {self.api_key}"
+                logger.debug(f"Using BGG API key for request to {url}")
+            else:
+                logger.warning(f"No BGG API key set - request to {url} may fail or be rate-limited")
             
             response = self.session.get(url, params=params, headers=headers)
+            
+            # Log response status for debugging
+            if response.status_code == 401:
+                logger.error(f"BGG API returned 401 Unauthorized. Check that BGG_API_KEY is valid and properly formatted.")
+            elif response.status_code != 200:
+                logger.warning(f"BGG API returned status {response.status_code} for game_id {game_id}")
+            
             response.raise_for_status()
             
             root = ET.fromstring(response.content)
