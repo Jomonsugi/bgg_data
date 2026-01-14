@@ -3,6 +3,7 @@ import sqlite3
 import time
 import xml.etree.ElementTree as ET
 import logging
+import os
 from bs4 import BeautifulSoup
 import re
 import json
@@ -15,6 +16,13 @@ class BGGDataCollector:
     def __init__(self, db_path="bgg_games.db"):
         self.db_path = db_path
         self.base_url = "https://boardgamegeek.com/xmlapi2"
+        # Get BGG API key from environment variable
+        self.api_key = os.getenv("BGG_API_KEY")
+        if self.api_key:
+            logger.info("BGG API key found - will use Authorization header for XML API requests")
+        else:
+            logger.warning("BGG_API_KEY not set - XML API requests may be rate-limited or fail")
+        
         # Use a session with browser-like headers; BGG increasingly blocks the default python-requests UA.
         self.session = requests.Session()
         self.session.headers.update(
@@ -130,7 +138,13 @@ class BGGDataCollector:
         }
         
         try:
-            response = self.session.get(url, params=params)
+            # Add Authorization header for XML API requests if API key is available
+            # Format per BGG docs: "Authorization: Bearer <token>" (no colon after Bearer)
+            headers = {}
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+            
+            response = self.session.get(url, params=params, headers=headers)
             response.raise_for_status()
             
             root = ET.fromstring(response.content)
