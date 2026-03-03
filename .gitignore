@@ -153,3 +153,4 @@ bgg_data/rule_book_agent/runs/
 
 # Local databases
 /bgg_games.db
+bgg_data/boardgame_agent/data/

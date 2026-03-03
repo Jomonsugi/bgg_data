@@ -1,0 +1,42 @@
+{
+  "rulebook": "Brass Birmingham",
+  "num_pages": 12,
+  "collection_name": "rulebook_pages",
+  "test_queries": [
+    "How do I determine who goes first?",
+    "How much money do I start with?",
+    "What does the light bulb on the tiles mean?",
+    "What type of hat does Isambard Kingdom Brunel wear?"
+  ],
+  "agent_decisions": [
+    {
+      "query": "How do I determine who goes first?",
+      "action": "vlm_multi_page",
+      "top_page": 4,
+      "confidence": 0.6036362179891406,
+      "reasoning": "Low confidence (0.604). VLM needed with top 3 pages."
+    },
+    {
+      "query": "How much money do I start with?",
+      "action": "vlm_multi_page",
+      "top_page": 5,
+      "confidence": 0.6062790004169696,
+      "reasoning": "Low confidence (0.606). VLM needed with top 3 pages."
+    },
+    {
+      "query": "What does the light bulb on the tiles mean?",
+      "action": "vlm_multi_page",
+      "top_page": 8,
+      "confidence": 0.5779343430182478,
+      "reasoning": "Low confidence (0.578). VLM needed with top 3 pages."
+    },
+    {
+      "query": "What type of hat does Isambard Kingdom Brunel wear?",
+      "action": "vlm_multi_page",
+      "top_page": 2,
+      "confidence": 0.5306679774494305,
+      "reasoning": "Low confidence (0.531). VLM needed with top 3 pages."
+    }
+  ],
+  "timestamp": "2026-02-15T23:38:48.377339"
+}

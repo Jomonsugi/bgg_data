@@ -1,0 +1,41 @@
+"""Tool registry for the boardgame rules agent.
+
+To add a new tool:
+  1. Create agent/tools/your_tool.py with a make_your_tool() factory function.
+  2. Import it below and add it to make_all_tools().
+
+That's it — graph.py picks up whatever make_all_tools() returns.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from fastembed import TextEmbedding
+from langchain_core.tools import BaseTool
+from qdrant_client import QdrantClient
+
+from bgg_data.boardgame_agent.config import GAMES_DB_PATH
+from .rag import make_rag_tool
+from .web_search import make_web_search_tool
+from .history import make_history_tool
+
+
+def make_all_tools(
+    game_id: str,
+    game_name: str,
+    qdrant_client: QdrantClient,
+    text_model: TextEmbedding,
+    db_path: Path = GAMES_DB_PATH,
+    top_k: int = 5,
+) -> list[BaseTool]:
+    """Return the complete list of tools available to the agent.
+
+    Tools are instantiated as closures bound to the current game context so
+    every tool call is automatically scoped to the right game.
+    """
+    return [
+        make_rag_tool(game_id, qdrant_client, text_model, top_k=top_k),
+        make_web_search_tool(game_id, db_path),
+        make_history_tool(game_id, text_model, db_path),
+    ]

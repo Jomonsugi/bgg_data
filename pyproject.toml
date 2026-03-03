@@ -32,11 +32,23 @@ dependencies = [
     "duckduckgo-search>=8.1.1",
     "ddgs>=9.5.5",
     "pymupdf>=1.24.0",
+    "streamlit>=1.35.0",
+    "streamlit-pdf-viewer>=0.0.14",
+    "fastembed>=0.4.0",
+    "qdrant-client>=1.9.0",
+    "docling>=2.0.0",
     "huggingface_hub>=0.23.0",
     "langdetect>=1.0.9",
     "workflows>=0.1.0",
+    "watchdog>=6.0.0",
 ]
 
-[project.scripts]
-bgg-fetch-rulebooks = "bgg_data.cli.main:main"
-bgg-workflow-rulebooks = "bgg_data.llama_index_workflow.cli:main"
+[dependency-groups]
+dev = [
+    "ipykernel>=7.1.0",
+]
+
+[tool.uv.workspace]
+members = [
+    "bgg_data/rag/coli_poli_experimentation",
+]
