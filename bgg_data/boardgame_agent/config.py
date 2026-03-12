@@ -25,7 +25,6 @@ MODEL_OPTIONS: dict[str, str] = {
     "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8": "together",
     "Qwen/Qwen3-235B-A22B-Instruct-2507-tput": "together",
     "deepseek-ai/DeepSeek-V3": "together",
-    "openai/gpt-oss-120b": "together",
     # "claude-sonnet-4-6": "anthropic",
     "gpt-4o": "openai",
 }

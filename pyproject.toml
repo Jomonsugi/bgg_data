@@ -41,12 +41,16 @@ dependencies = [
     "langdetect>=1.0.9",
     "workflows>=0.1.0",
     "watchdog>=6.0.0",
+    "langchain-anthropic",
 ]
 
 [dependency-groups]
 dev = [
     "ipykernel>=7.1.0",
 ]
+
+[tool.setuptools.packages.find]
+where = ["."]
 
 [tool.uv.workspace]
 members = [

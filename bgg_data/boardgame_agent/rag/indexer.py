@@ -24,8 +24,26 @@ from bgg_data.boardgame_agent.config import (
 from bgg_data.boardgame_agent.rag.extractor import chunk_by_sections
 
 
+_qdrant_client: QdrantClient | None = None
+
+
+def get_qdrant_client() -> QdrantClient:
+    """Return the process-wide shared QdrantClient (created once).
+
+    Cleans up any stale .lock file left by a previous crashed process before
+    opening the storage, so the app never requires manual intervention on restart.
+    """
+    global _qdrant_client
+    if _qdrant_client is None:
+        lock_file = QDRANT_PATH / ".lock"
+        if lock_file.exists():
+            lock_file.unlink()
+        _qdrant_client = QdrantClient(path=str(QDRANT_PATH))
+    return _qdrant_client
+
+
 def _get_client() -> QdrantClient:
-    return QdrantClient(path=str(QDRANT_PATH))
+    return get_qdrant_client()
 
 
 def _get_text_model() -> TextEmbedding:

@@ -31,6 +31,7 @@ def _extract_single_pdf(
       - bboxes: list of {x0, y0, x1, y1, text}  (Docling bottom-left origin, pts)
     """
     pipeline_options = PdfPipelineOptions()
+    pipeline_options.do_table_structure = True
     converter = DocumentConverter(
         format_options={
             InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
@@ -47,9 +48,20 @@ def _extract_single_pdf(
         bboxes: list[dict[str, Any]] = []
 
         for item, _ in items_for_page:
+            label = str(item.label.value) if getattr(item, "label", None) else "text"
             item_text = ""
-            if getattr(item, "text", None):
+
+            if label == "table":
+                # Tables have empty .text — use export_to_markdown() for structured content.
+                if hasattr(item, "export_to_markdown"):
+                    try:
+                        item_text = item.export_to_markdown(doc=result.document)
+                    except TypeError:
+                        item_text = item.export_to_markdown()
+            elif getattr(item, "text", None):
                 item_text = str(item.text)
+
+            if item_text:
                 text_parts.append(item_text)
 
             if getattr(item, "prov", None):
@@ -63,7 +75,7 @@ def _extract_single_pdf(
                                 "x1": bbox.r,
                                 "y1": bbox.b,
                                 "text": item_text,
-                                "label": str(item.label.value) if getattr(item, "label", None) else "text",
+                                "label": label,
                             }
                         )
 
@@ -112,31 +124,59 @@ def load_cached_pages(game_id: str, doc_name: str) -> list[dict[str, Any]] | Non
 
 
 _HEADING_LABELS = {"section_header", "title"}
+_TABLE_LABEL = "table"
 
 
 def chunk_by_sections(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Split page-level dicts into section-level chunks using bbox labels.
 
-    Each chunk covers one heading + its following body bboxes, staying within
-    a single page. Pages with no heading labels are emitted as a single chunk.
+    Chunking rules:
+    - Each table bbox becomes its own isolated chunk (tables are complete units).
+    - Non-table bboxes are grouped by heading: a new chunk starts at each
+      section_header/title. Pages with no headings emit as a single chunk.
+    - Lone-heading runs (heading with no body) are merged into the next run.
 
-    Returns a list of chunk dicts with the same fields as page dicts plus
-    ``original_bbox_indices`` — the indices of the chunk's bboxes in the
+    Returns chunk dicts with ``original_bbox_indices`` mapping back to the
     original page bbox list (used by the retriever for citation display).
     """
     chunks: list[dict[str, Any]] = []
+
+    def _emit(bbox_indices: list[int], page: dict[str, Any], bboxes: list[dict[str, Any]]) -> None:
+        chunk_bboxes = [bboxes[j] for j in bbox_indices]
+        chunk_text = "\n\n".join(b["text"] for b in chunk_bboxes if b.get("text"))
+        if not chunk_text.strip():
+            return
+        chunks.append({
+            "game_id": page["game_id"],
+            "doc_name": page["doc_name"],
+            "page_num": page["page_num"],
+            "text": chunk_text,
+            "bboxes": chunk_bboxes,
+            "original_bbox_indices": bbox_indices,
+        })
 
     for page in pages:
         bboxes: list[dict[str, Any]] = page.get("bboxes", [])
         if not bboxes:
             continue
 
-        # Group bboxes into runs: start a new run at each heading label.
-        runs: list[list[int]] = []  # each run is a list of bbox indices
-        current: list[int] = []
-
+        # Separate tables out first — each becomes its own chunk immediately.
+        # Collect non-table indices for section-based chunking below.
+        non_table_indices: list[int] = []
         for idx, bbox in enumerate(bboxes):
-            label = bbox.get("label", "text")
+            if bbox.get("label", "text") == _TABLE_LABEL:
+                _emit([idx], page, bboxes)
+            else:
+                non_table_indices.append(idx)
+
+        if not non_table_indices:
+            continue
+
+        # Group non-table bboxes into runs: start a new run at each heading.
+        runs: list[list[int]] = []
+        current: list[int] = []
+        for idx in non_table_indices:
+            label = bboxes[idx].get("label", "text")
             if label in _HEADING_LABELS and current:
                 runs.append(current)
                 current = [idx]
@@ -145,12 +185,11 @@ def chunk_by_sections(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if current:
             runs.append(current)
 
-        # Merge lone-heading runs (no body) into the following run.
+        # Merge lone-heading runs into the following run.
         merged: list[list[int]] = []
         i = 0
         while i < len(runs):
             run = runs[i]
-            # A run is "lone heading" if it has exactly one bbox and that bbox is a heading
             if (
                 len(run) == 1
                 and bboxes[run[0]].get("label", "text") in _HEADING_LABELS
@@ -163,20 +202,7 @@ def chunk_by_sections(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 i += 1
 
         for bbox_indices in merged:
-            chunk_bboxes = [bboxes[j] for j in bbox_indices]
-            chunk_text = "\n\n".join(b["text"] for b in chunk_bboxes if b.get("text"))
-            if not chunk_text.strip():
-                continue
-            chunks.append(
-                {
-                    "game_id": page["game_id"],
-                    "doc_name": page["doc_name"],
-                    "page_num": page["page_num"],
-                    "text": chunk_text,
-                    "bboxes": chunk_bboxes,
-                    "original_bbox_indices": bbox_indices,
-                }
-            )
+            _emit(bbox_indices, page, bboxes)
 
     return chunks
 

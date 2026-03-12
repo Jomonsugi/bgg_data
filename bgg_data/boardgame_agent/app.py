@@ -9,6 +9,8 @@ Layout
 
 from __future__ import annotations
 
+import uuid
+
 import streamlit as st
 
 from bgg_data.boardgame_agent.db.games import init_db, save_qa, set_qa_status
@@ -48,6 +50,7 @@ def _init_session() -> None:
         "active_citation": None, # Citation | None
         "active_doc": None,      # doc_name of the PDF currently in the viewer
         "layout": "Equal",       # one of the _LAYOUT_PRESETS keys
+        "session_thread_id": str(uuid.uuid4()),  # stable per session, new on restart
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -221,7 +224,7 @@ def main() -> None:
 
             with st.chat_message("assistant"):
                 with st.spinner("Consulting the rulebook…"):
-                    qa: QAWithCitations = run_query(compiled, game_id, query)
+                    qa: QAWithCitations = run_query(compiled, game_id, query, thread_id=st.session_state.session_thread_id)
 
                 st.markdown(qa.answer)
 

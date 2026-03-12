@@ -14,6 +14,7 @@ response stored in state["final_answer"].
 from __future__ import annotations
 
 import sqlite3
+import uuid
 from typing import Any
 
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage, HumanMessage
@@ -22,7 +23,6 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
 from fastembed import TextEmbedding
-from qdrant_client import QdrantClient
 
 from bgg_data.boardgame_agent.agent.prompts import FORMAT_PROMPT, SYSTEM_PROMPT_TEMPLATE
 from bgg_data.boardgame_agent.agent.schemas import QAWithCitations
@@ -36,9 +36,9 @@ from bgg_data.boardgame_agent.config import (
     GAMES_DB_PATH,
     MODEL_OPTIONS,
     OPENAI_API_KEY,
-    QDRANT_PATH,
     TOGETHER_API_KEY,
 )
+from bgg_data.boardgame_agent.rag.indexer import get_qdrant_client
 
 
 def _build_llm(model_name: str):
@@ -65,7 +65,7 @@ def build_agent(
     Returns (compiled_graph, llm, qdrant_client, text_model).
     The caller should cache the result keyed by (game_id, model_name, top_k).
     """
-    qdrant_client = QdrantClient(path=str(QDRANT_PATH))
+    qdrant_client = get_qdrant_client()
     text_model = TextEmbedding(model_name=EMBED_MODEL_NAME)
     tools = make_all_tools(
         game_id, game_name, qdrant_client, text_model, GAMES_DB_PATH, top_k=top_k
@@ -80,8 +80,30 @@ def build_agent(
     # ── Nodes ─────────────────────────────────────────────────────────────────
 
     def call_agent(state: AgentState) -> dict:
-        messages = [system_message] + list(state["messages"])
-        response = llm_with_tools.invoke(messages)
+        all_messages = list(state["messages"])
+
+        # Find the last AIMessage so we know which tool outputs have been processed.
+        last_ai_idx = max(
+            (i for i, m in enumerate(all_messages) if isinstance(m, AIMessage)),
+            default=-1,
+        )
+
+        # Compress ToolMessages that the LLM has already seen (before last AI turn)
+        # to free context space, while preserving tool_call_id pairing.
+        compressed: list = []
+        for i, m in enumerate(all_messages):
+            if isinstance(m, ToolMessage) and i < last_ai_idx:
+                compressed.append(
+                    ToolMessage(
+                        content=f"[retrieved {len(m.content)} chars — already processed]",
+                        tool_call_id=m.tool_call_id,
+                        name=getattr(m, "name", "tool"),
+                    )
+                )
+            else:
+                compressed.append(m)
+
+        response = llm_with_tools.invoke([system_message] + compressed)
         return {"messages": [response]}
 
     tool_node = ToolNode(tools)
@@ -146,14 +168,20 @@ def run_query(
     compiled_graph: Any,
     game_id: str,
     query: str,
+    thread_id: str | None = None,
 ) -> QAWithCitations:
-    """Invoke the agent for *query* and return structured QAWithCitations."""
-    config = {"configurable": {"thread_id": game_id}}
+    """Invoke the agent for *query* and return structured QAWithCitations.
+
+    Pass a stable *thread_id* to share conversation context across queries in a
+    session (enables follow-up questions). Old RAG tool outputs are compressed
+    in call_agent so only Q&A text accumulates, not raw retrieval dumps.
+    """
+    config = {"configurable": {"thread_id": thread_id or str(uuid.uuid4())}, "recursion_limit": 12}
     result = compiled_graph.invoke(
         {
             "messages": [HumanMessage(content=query)],
             "game_id": game_id,
-            "game_name": "",  # already in system prompt; placeholder here
+            "game_name": "",
             "final_answer": None,
         },
         config=config,
