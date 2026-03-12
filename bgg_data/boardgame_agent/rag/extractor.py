@@ -63,6 +63,7 @@ def _extract_single_pdf(
                                 "x1": bbox.r,
                                 "y1": bbox.b,
                                 "text": item_text,
+                                "label": str(item.label.value) if getattr(item, "label", None) else "text",
                             }
                         )
 
@@ -108,6 +109,76 @@ def load_cached_pages(game_id: str, doc_name: str) -> list[dict[str, Any]] | Non
     if not cache_path.exists():
         return None
     return json.loads(cache_path.read_text(encoding="utf-8"))
+
+
+_HEADING_LABELS = {"section_header", "title"}
+
+
+def chunk_by_sections(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Split page-level dicts into section-level chunks using bbox labels.
+
+    Each chunk covers one heading + its following body bboxes, staying within
+    a single page. Pages with no heading labels are emitted as a single chunk.
+
+    Returns a list of chunk dicts with the same fields as page dicts plus
+    ``original_bbox_indices`` — the indices of the chunk's bboxes in the
+    original page bbox list (used by the retriever for citation display).
+    """
+    chunks: list[dict[str, Any]] = []
+
+    for page in pages:
+        bboxes: list[dict[str, Any]] = page.get("bboxes", [])
+        if not bboxes:
+            continue
+
+        # Group bboxes into runs: start a new run at each heading label.
+        runs: list[list[int]] = []  # each run is a list of bbox indices
+        current: list[int] = []
+
+        for idx, bbox in enumerate(bboxes):
+            label = bbox.get("label", "text")
+            if label in _HEADING_LABELS and current:
+                runs.append(current)
+                current = [idx]
+            else:
+                current.append(idx)
+        if current:
+            runs.append(current)
+
+        # Merge lone-heading runs (no body) into the following run.
+        merged: list[list[int]] = []
+        i = 0
+        while i < len(runs):
+            run = runs[i]
+            # A run is "lone heading" if it has exactly one bbox and that bbox is a heading
+            if (
+                len(run) == 1
+                and bboxes[run[0]].get("label", "text") in _HEADING_LABELS
+                and i + 1 < len(runs)
+            ):
+                merged.append(run + runs[i + 1])
+                i += 2
+            else:
+                merged.append(run)
+                i += 1
+
+        for bbox_indices in merged:
+            chunk_bboxes = [bboxes[j] for j in bbox_indices]
+            chunk_text = "\n\n".join(b["text"] for b in chunk_bboxes if b.get("text"))
+            if not chunk_text.strip():
+                continue
+            chunks.append(
+                {
+                    "game_id": page["game_id"],
+                    "doc_name": page["doc_name"],
+                    "page_num": page["page_num"],
+                    "text": chunk_text,
+                    "bboxes": chunk_bboxes,
+                    "original_bbox_indices": bbox_indices,
+                }
+            )
+
+    return chunks
 
 
 def extract_source(

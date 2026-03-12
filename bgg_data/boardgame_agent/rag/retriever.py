@@ -58,8 +58,9 @@ def format_pages_for_llm(points: list[Any]) -> str:
         text = p.get("text", "")
         bboxes = p.get("bboxes", [])
 
+        original_indices = p.get("original_bbox_indices", list(range(len(bboxes))))
         bbox_lines = "\n".join(
-            f'  [{i}] "{b.get("text", "")[:200]}"'
+            f'  [{original_indices[i]}] "{b.get("text", "")[:200]}"'
             for i, b in enumerate(bboxes)
             if b.get("text")
         )

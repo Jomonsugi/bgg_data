@@ -29,21 +29,37 @@ from bgg_data.boardgame_agent.agent.schemas import QAWithCitations
 from bgg_data.boardgame_agent.agent.state import AgentState
 from bgg_data.boardgame_agent.agent.tools import make_all_tools
 from bgg_data.boardgame_agent.config import (
+    ANTHROPIC_API_KEY,
     CHECKPOINTS_DB_PATH,
+    DEFAULT_MODEL,
     EMBED_MODEL_NAME,
     GAMES_DB_PATH,
+    MODEL_OPTIONS,
+    OPENAI_API_KEY,
     QDRANT_PATH,
     TOGETHER_API_KEY,
-    TOGETHER_MODEL_NAME,
 )
+
+
+def _build_llm(model_name: str):
+    """Instantiate the correct LangChain chat class based on MODEL_OPTIONS."""
+    provider = MODEL_OPTIONS.get(model_name, "together")
+    if provider == "anthropic":
+        from langchain_anthropic import ChatAnthropic
+        return ChatAnthropic(model=model_name, api_key=ANTHROPIC_API_KEY, temperature=0)
+    elif provider == "openai":
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(model=model_name, api_key=OPENAI_API_KEY, temperature=0)
+    else:
+        return ChatTogether(model=model_name, together_api_key=TOGETHER_API_KEY, temperature=0)
 
 
 def build_agent(
     game_id: str,
     game_name: str,
-    model_name: str = TOGETHER_MODEL_NAME,
+    model_name: str = DEFAULT_MODEL,
     top_k: int = 5,
-) -> tuple[Any, ChatTogether, QdrantClient, TextEmbedding]:
+) -> tuple[Any, Any, QdrantClient, TextEmbedding]:
     """Compile the LangGraph agent for *game_id*.
 
     Returns (compiled_graph, llm, qdrant_client, text_model).
@@ -55,11 +71,7 @@ def build_agent(
         game_id, game_name, qdrant_client, text_model, GAMES_DB_PATH, top_k=top_k
     )
 
-    llm = ChatTogether(
-        model=model_name,
-        together_api_key=TOGETHER_API_KEY,
-        temperature=0,
-    )
+    llm = _build_llm(model_name)
     llm_with_tools = llm.bind_tools(tools)
     system_message = SystemMessage(
         content=SYSTEM_PROMPT_TEMPLATE.format(game_name=game_name)

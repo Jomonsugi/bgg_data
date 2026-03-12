@@ -21,6 +21,7 @@ from bgg_data.boardgame_agent.config import (
     EMBED_MODEL_NAME,
     QDRANT_PATH,
 )
+from bgg_data.boardgame_agent.rag.extractor import chunk_by_sections
 
 
 def _get_client() -> QdrantClient:
@@ -55,16 +56,16 @@ def build_index(
 
     _ensure_collection(client, text_model.embedding_size)
 
-    points = []
-    for page in pages_data:
-        emb = list(text_model.embed([page["text"]]))[0]
-        points.append(
-            models.PointStruct(
-                id=str(uuid.uuid4()),
-                vector=emb.tolist(),
-                payload=page,
-            )
+    texts = [page["text"] for page in pages_data]
+    embeddings = list(text_model.embed(texts))
+    points = [
+        models.PointStruct(
+            id=str(uuid.uuid4()),
+            vector=emb.tolist(),
+            payload=page,
         )
+        for page, emb in zip(pages_data, embeddings)
+    ]
 
     if points:
         client.upsert(collection_name=COLLECTION_NAME, points=points)
@@ -121,7 +122,8 @@ def reindex_all() -> None:
         game_id = extracted_dir.parent.name
         for json_path in sorted(extracted_dir.glob("*.json")):
             pages = json.loads(json_path.read_text(encoding="utf-8"))
-            print(f"  Indexing {game_id}/{json_path.stem} ({len(pages)} pages) …")
-            build_index(pages, client=client, text_model=text_model)
+            chunks = chunk_by_sections(pages)
+            print(f"  Indexing {game_id}/{json_path.stem} ({len(pages)} pages → {len(chunks)} chunks) …")
+            build_index(chunks, client=client, text_model=text_model)
 
     print("Reindex complete.")

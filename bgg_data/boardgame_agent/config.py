@@ -11,26 +11,30 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ── LLM (Together API) ────────────────────────────────────────────────────────
-# API key comes from environment; model is selected via the sidebar dropdown.
+# ── LLM API keys ──────────────────────────────────────────────────────────────
 TOGETHER_API_KEY: str | None = os.getenv("TOGETHER_API_KEY")
+ANTHROPIC_API_KEY: str | None = os.getenv("ANTHROPIC_API_KEY")
+OPENAI_API_KEY: str | None = os.getenv("OPENAI_API_KEY")
 
-# Default model (first in the list below is used until the user picks another).
-TOGETHER_MODEL_NAME: str = "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+# ── Model registry ────────────────────────────────────────────────────────────
+# Maps model id → provider. Add Anthropic/OpenAI models here as needed.
+# Provider values: "together" | "anthropic" | "openai"
+MODEL_OPTIONS: dict[str, str] = {
+    "meta-llama/Llama-3.3-70B-Instruct-Turbo": "together",
+    "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo": "together",
+    "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8": "together",
+    "Qwen/Qwen3-235B-A22B-Instruct-2507-tput": "together",
+    "deepseek-ai/DeepSeek-V3": "together",
+    "openai/gpt-oss-120b": "together",
+    # "claude-sonnet-4-6": "anthropic",
+    "gpt-4o": "openai",
+}
 
-# Models shown in the sidebar dropdown — add or remove freely.
-TOGETHER_MODEL_OPTIONS: list[str] = [
-    "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-    "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
-    "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
-    "Qwen/Qwen2.5-72B-Instruct-Turbo",
-    "deepseek-ai/DeepSeek-V3",
-    "openai/gpt-oss-120b",
-]
+DEFAULT_MODEL: str = "meta-llama/Llama-3.3-70B-Instruct-Turbo"
 
 # ── Embeddings ────────────────────────────────────────────────────────────────
 # Changing this requires clicking "Rebuild index" in the sidebar.
-EMBED_MODEL_NAME: str = "BAAI/bge-base-en-v1.5"
+EMBED_MODEL_NAME: str = "mixedbread-ai/mxbai-embed-large-v1"
 
 # ── Retrieval ─────────────────────────────────────────────────────────────────
 # Default number of pages retrieved per query. Adjustable in the sidebar.

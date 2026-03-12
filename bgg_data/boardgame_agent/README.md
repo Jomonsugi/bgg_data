@@ -41,7 +41,7 @@ cp bgg_data/boardgame_agent/.env.example bgg_data/boardgame_agent/.env
 From the project root (where `pyproject.toml` lives):
 
 ```bash
-streamlit run -m bgg_data.boardgame_agent.app
+uv run python -m streamlit run bgg_data/boardgame_agent/app.py
 ```
 
 This runs the app as an installed module so `bgg_data` imports resolve correctly.

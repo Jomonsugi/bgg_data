@@ -10,10 +10,10 @@ import streamlit as st
 
 from bgg_data.boardgame_agent.config import (
     DATA_DIR,
+    DEFAULT_MODEL,
     EMBED_MODEL_NAME,
+    MODEL_OPTIONS,
     RETRIEVAL_TOP_K,
-    TOGETHER_MODEL_NAME,
-    TOGETHER_MODEL_OPTIONS,
 )
 from bgg_data.boardgame_agent.db.games import (
     add_search_domain,
@@ -27,7 +27,7 @@ from bgg_data.boardgame_agent.db.games import (
     register_document,
     remove_search_domain,
 )
-from bgg_data.boardgame_agent.rag.extractor import get_or_extract
+from bgg_data.boardgame_agent.rag.extractor import chunk_by_sections, get_or_extract
 from bgg_data.boardgame_agent.rag.indexer import build_index, reindex_all, remove_doc_from_index
 
 
@@ -49,12 +49,11 @@ def render_sidebar() -> tuple[str | None, str | None, str, int]:
 
         # ── Model settings ────────────────────────────────────────────────────
         with st.expander("Model settings", expanded=False):
+            _model_list = list(MODEL_OPTIONS.keys())
             selected_model = st.selectbox(
                 "LLM model",
-                options=TOGETHER_MODEL_OPTIONS,
-                index=TOGETHER_MODEL_OPTIONS.index(TOGETHER_MODEL_NAME)
-                if TOGETHER_MODEL_NAME in TOGETHER_MODEL_OPTIONS
-                else 0,
+                options=_model_list,
+                index=_model_list.index(DEFAULT_MODEL) if DEFAULT_MODEL in _model_list else 0,
                 key="selected_model",
             )
             top_k = st.slider(
@@ -180,7 +179,8 @@ def _copy_pdf_to_store(game_id: str, pdf_path: Path, doc_name: str) -> Path:
 def _index_single_pdf(game_id: str, pdf_path: Path, doc_name: str) -> None:
     stored_path = _copy_pdf_to_store(game_id, pdf_path, doc_name)
     pages = get_or_extract(stored_path, game_id, doc_name)
-    build_index(pages)
+    chunks = chunk_by_sections(pages)
+    build_index(chunks)
     cache_path = DATA_DIR / "games" / game_id / "extracted" / f"{doc_name}.json"
     register_document(game_id, doc_name, stored_path, cache_path)
 
