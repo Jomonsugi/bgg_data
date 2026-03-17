@@ -70,7 +70,7 @@ def _render_citation_chips(citations: list[dict], game_id: str) -> None:
         page = c.get("page_num", "?")
         label = f"📄 {doc} · p.{page}"
         with cols[i % 4]:
-            if st.button(label, key=f"cite_{id(c)}_{i}", use_container_width=True):
+            if st.button(label, key=f"cite_{id(c)}_{i}", width='stretch'):
                 st.session_state.active_citation = c
                 st.session_state.active_doc = doc
                 st.rerun()
@@ -141,7 +141,7 @@ def _render_pdf_panel(game_id: str) -> None:
         # Render highlighted page image at the top
         img = render_highlighted_page(game_id, doc_name, page_num, bbox_indices)
         if img:
-            st.image(img, use_container_width=True)
+            st.image(img, width='stretch')
         else:
             st.warning("Could not render page — ensure the PDF is indexed.")
 

@@ -66,7 +66,7 @@ def render_sidebar() -> tuple[str | None, str | None, str, int]:
                 help="Number of rulebook pages retrieved per query.",
             )
             st.caption(f"**Embeddings:** `{EMBED_MODEL_NAME}`")
-            if st.button("Rebuild index (new embed model)", use_container_width=True):
+            if st.button("Rebuild index (new embed model)", width='stretch'):
                 with st.spinner("Rebuilding Qdrant index from cached Docling data…"):
                     reindex_all()
                 st.success("Index rebuilt.")
