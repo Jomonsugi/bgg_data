@@ -11,9 +11,11 @@ import streamlit as st
 from bgg_data.boardgame_agent.config import (
     DATA_DIR,
     DEFAULT_MODEL,
-    EMBED_MODEL_NAME,
     MODEL_OPTIONS,
+    OLLAMA_EMBED_MODEL,
     RETRIEVAL_TOP_K,
+    SPARSE_EMBED_MODEL,
+    TAVILY_API_KEY,
 )
 from bgg_data.boardgame_agent.db.games import (
     add_search_domain,
@@ -36,10 +38,10 @@ def _game_id_from_name(name: str) -> str:
     return re.sub(r"[^a-z0-9_]", "_", name.strip().lower()).strip("_")
 
 
-def render_sidebar() -> tuple[str | None, str | None, str, int]:
+def render_sidebar() -> tuple[str | None, str | None, str, int, bool]:
     """Render the full sidebar.
 
-    Returns (game_id, game_name, selected_model, top_k).
+    Returns (game_id, game_name, selected_model, top_k, enable_web_search).
     game_id / game_name are None when no game is selected.
     """
     init_db()
@@ -65,7 +67,8 @@ def render_sidebar() -> tuple[str | None, str | None, str, int]:
                 key="top_k",
                 help="Number of rulebook pages retrieved per query.",
             )
-            st.caption(f"**Embeddings:** `{EMBED_MODEL_NAME}`")
+            st.caption(f"**Dense:** `{OLLAMA_EMBED_MODEL}` (Ollama)")
+            st.caption(f"**Sparse:** `{SPARSE_EMBED_MODEL}` (SPLADE++)")
             if st.button("Rebuild index (new embed model)", width='stretch'):
                 with st.spinner("Rebuilding Qdrant index from cached Docling data…"):
                     reindex_all()
@@ -97,12 +100,17 @@ def render_sidebar() -> tuple[str | None, str | None, str, int]:
             if st.button("Create game", key="create_game_btn") and new_name.strip():
                 gid = _game_id_from_name(new_name)
                 create_game(gid, new_name.strip())
-                st.success(f"Created: {new_name}")
+                # Auto-select the newly created game so uploads go to it.
+                refreshed = get_all_games()
+                new_ids = [g["game_id"] for g in refreshed]
+                if gid in new_ids:
+                    st.session_state["selected_game_idx"] = new_ids.index(gid)
+                st.success(f"Created & selected: {new_name}")
                 st.rerun()
 
         if selected_game_id is None:
             st.info("Create a game to get started.")
-            return None, None, selected_model, top_k
+            return None, None, selected_model, top_k, False
 
         st.divider()
 
@@ -127,7 +135,11 @@ def render_sidebar() -> tuple[str | None, str | None, str, int]:
             accept_multiple_files=True,
             key="doc_uploader",
         )
-        if uploaded and st.button("Index uploaded PDFs", key="index_pdfs_btn"):
+        if uploaded and st.button(
+            f"Index to **{selected_game_name}**",
+            key="index_pdfs_btn",
+            type="primary",
+        ):
             _index_uploaded_pdfs(selected_game_id, uploaded)
             st.rerun()
 
@@ -135,34 +147,47 @@ def render_sidebar() -> tuple[str | None, str | None, str, int]:
         folder_path = st.text_input(
             "Or index a folder path", placeholder="/path/to/folder", key="folder_path"
         )
-        if folder_path and st.button("Index folder", key="index_folder_btn"):
+        if folder_path and st.button(
+            f"Index folder to **{selected_game_name}**",
+            key="index_folder_btn",
+        ):
             _index_folder(selected_game_id, Path(folder_path))
             st.rerun()
 
         st.divider()
 
-        # ── Web search domains ────────────────────────────────────────────────
-        st.subheader("Web search domains")
-        st.caption("Agent searches these sites. Empty = unrestricted.")
+        # ── Web search (optional) ─────────────────────────────────────────────
+        enable_web_search = False
+        if TAVILY_API_KEY:
+            enable_web_search = st.checkbox(
+                "Enable web search",
+                value=True,
+                key="enable_web_search",
+                help="Requires a Tavily API key. Lets the agent search the web for community rulings.",
+            )
 
-        domains = get_search_domains(selected_game_id)
-        for domain in domains:
-            col1, col2 = st.columns([4, 1])
-            col1.write(f"🌐 {domain}")
-            if col2.button("✕", key=f"del_dom_{domain}", help="Remove"):
-                remove_search_domain(selected_game_id, domain)
-                st.rerun()
+            if enable_web_search:
+                st.subheader("Web search domains")
+                st.caption("Agent searches these sites. Empty = unrestricted.")
 
-        new_domain = st.text_input("Add domain", placeholder="example.com", key="new_domain")
-        col_a, col_b = st.columns(2)
-        if col_a.button("Add", key="add_domain_btn") and new_domain.strip():
-            add_search_domain(selected_game_id, new_domain.strip())
-            st.rerun()
-        if col_b.button("Clear all", key="clear_domains_btn"):
-            clear_search_domains(selected_game_id)
-            st.rerun()
+                domains = get_search_domains(selected_game_id)
+                for domain in domains:
+                    col1, col2 = st.columns([4, 1])
+                    col1.write(f"🌐 {domain}")
+                    if col2.button("✕", key=f"del_dom_{domain}", help="Remove"):
+                        remove_search_domain(selected_game_id, domain)
+                        st.rerun()
 
-    return selected_game_id, selected_game_name, selected_model, top_k
+                new_domain = st.text_input("Add domain", placeholder="example.com", key="new_domain")
+                col_a, col_b = st.columns(2)
+                if col_a.button("Add", key="add_domain_btn") and new_domain.strip():
+                    add_search_domain(selected_game_id, new_domain.strip())
+                    st.rerun()
+                if col_b.button("Clear all", key="clear_domains_btn"):
+                    clear_search_domains(selected_game_id)
+                    st.rerun()
+
+    return selected_game_id, selected_game_name, selected_model, top_k, enable_web_search
 
 
 # ── Document management helpers ───────────────────────────────────────────────
@@ -179,8 +204,11 @@ def _copy_pdf_to_store(game_id: str, pdf_path: Path, doc_name: str) -> Path:
 def _index_single_pdf(game_id: str, pdf_path: Path, doc_name: str) -> None:
     stored_path = _copy_pdf_to_store(game_id, pdf_path, doc_name)
     pages = get_or_extract(stored_path, game_id, doc_name)
+    print(f"  {doc_name}: {len(pages)} pages extracted")
     chunks = chunk_by_sections(pages)
+    print(f"  {doc_name}: {len(chunks)} chunks → embedding…")
     build_index(chunks)
+    print(f"  {doc_name}: indexing complete")
     cache_path = DATA_DIR / "games" / game_id / "extracted" / f"{doc_name}.json"
     register_document(game_id, doc_name, stored_path, cache_path)
 

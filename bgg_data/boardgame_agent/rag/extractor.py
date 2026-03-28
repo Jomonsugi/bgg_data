@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from docling.datamodel.base_models import InputFormat
-from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.datamodel.pipeline_options import AcceleratorDevice, AcceleratorOptions, PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
 
 from bgg_data.boardgame_agent.config import DATA_DIR
@@ -32,6 +32,7 @@ def _extract_single_pdf(
     """
     pipeline_options = PdfPipelineOptions()
     pipeline_options.do_table_structure = True
+    pipeline_options.accelerator_options = AcceleratorOptions(device=AcceleratorDevice.MPS)
     converter = DocumentConverter(
         format_options={
             InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)

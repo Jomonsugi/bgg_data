@@ -22,9 +22,9 @@ from langchain_together import ChatTogether
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
-from fastembed import TextEmbedding
+from qdrant_client import QdrantClient
 
-from bgg_data.boardgame_agent.agent.prompts import FORMAT_PROMPT, SYSTEM_PROMPT_TEMPLATE
+from bgg_data.boardgame_agent.agent.prompts import FORMAT_PROMPT, build_system_prompt
 from bgg_data.boardgame_agent.agent.schemas import QAWithCitations
 from bgg_data.boardgame_agent.agent.state import AgentState
 from bgg_data.boardgame_agent.agent.tools import make_all_tools
@@ -32,7 +32,6 @@ from bgg_data.boardgame_agent.config import (
     ANTHROPIC_API_KEY,
     CHECKPOINTS_DB_PATH,
     DEFAULT_MODEL,
-    EMBED_MODEL_NAME,
     GAMES_DB_PATH,
     MODEL_OPTIONS,
     OPENAI_API_KEY,
@@ -41,40 +40,58 @@ from bgg_data.boardgame_agent.config import (
 from bgg_data.boardgame_agent.rag.indexer import get_qdrant_client
 
 
+_PROVIDER_KEY_MAP = {
+    "together": ("TOGETHER_API_KEY", lambda: TOGETHER_API_KEY),
+    "anthropic": ("ANTHROPIC_API_KEY", lambda: ANTHROPIC_API_KEY),
+    "openai": ("OPENAI_API_KEY", lambda: OPENAI_API_KEY),
+}
+
+
 def _build_llm(model_name: str):
     """Instantiate the correct LangChain chat class based on MODEL_OPTIONS."""
     provider = MODEL_OPTIONS.get(model_name, "together")
+    env_name, get_key = _PROVIDER_KEY_MAP[provider]
+    key = get_key()
+    if not key:
+        raise ValueError(
+            f"No API key found for {provider}. "
+            f"Set {env_name} in your .env file or environment to use {model_name}."
+        )
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
-        return ChatAnthropic(model=model_name, api_key=ANTHROPIC_API_KEY, temperature=0)
+        return ChatAnthropic(model=model_name, api_key=key, temperature=0)
     elif provider == "openai":
         from langchain_openai import ChatOpenAI
-        return ChatOpenAI(model=model_name, api_key=OPENAI_API_KEY, temperature=0)
+        return ChatOpenAI(model=model_name, api_key=key, temperature=0)
     else:
-        return ChatTogether(model=model_name, together_api_key=TOGETHER_API_KEY, temperature=0)
+        return ChatTogether(model=model_name, together_api_key=key, temperature=0)
 
 
 def build_agent(
     game_id: str,
     game_name: str,
     model_name: str = DEFAULT_MODEL,
-    top_k: int = 5,
-) -> tuple[Any, Any, QdrantClient, TextEmbedding]:
+    enable_web_search: bool = True,
+) -> tuple[Any, Any, QdrantClient, dict]:
     """Compile the LangGraph agent for *game_id*.
 
-    Returns (compiled_graph, llm, qdrant_client, text_model).
-    The caller should cache the result keyed by (game_id, model_name, top_k).
+    Returns (compiled_graph, llm, qdrant_client, agent_config).
+    *agent_config* is a mutable dict — update ``agent_config["top_k"]``
+    before each query so the sidebar slider takes effect without rebuilding.
     """
+    from bgg_data.boardgame_agent.config import RETRIEVAL_TOP_K
+
     qdrant_client = get_qdrant_client()
-    text_model = TextEmbedding(model_name=EMBED_MODEL_NAME)
+    agent_config: dict = {"top_k": RETRIEVAL_TOP_K}
     tools = make_all_tools(
-        game_id, game_name, qdrant_client, text_model, GAMES_DB_PATH, top_k=top_k
+        game_id, game_name, qdrant_client, agent_config, GAMES_DB_PATH,
+        enable_web_search=enable_web_search,
     )
 
     llm = _build_llm(model_name)
     llm_with_tools = llm.bind_tools(tools)
     system_message = SystemMessage(
-        content=SYSTEM_PROMPT_TEMPLATE.format(game_name=game_name)
+        content=build_system_prompt(game_name, enable_web_search)
     )
 
     # ── Nodes ─────────────────────────────────────────────────────────────────
@@ -161,7 +178,7 @@ def build_agent(
     checkpointer = SqliteSaver(conn)
 
     compiled = graph.compile(checkpointer=checkpointer)
-    return compiled, llm, qdrant_client, text_model
+    return compiled, llm, qdrant_client, agent_config
 
 
 def run_query(
@@ -176,7 +193,7 @@ def run_query(
     session (enables follow-up questions). Old RAG tool outputs are compressed
     in call_agent so only Q&A text accumulates, not raw retrieval dumps.
     """
-    config = {"configurable": {"thread_id": thread_id or str(uuid.uuid4())}, "recursion_limit": 12}
+    config = {"configurable": {"thread_id": thread_id or str(uuid.uuid4())}, "recursion_limit": 25}
     result = compiled_graph.invoke(
         {
             "messages": [HumanMessage(content=query)],

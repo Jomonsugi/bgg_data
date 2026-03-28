@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sqlite3 data/games.db \"SELECT game_id, game_name FROM games;\")",
+      "Bash(sqlite3 data/games.db \"SELECT game_id, doc_name, pdf_path FROM documents ORDER BY game_id;\")",
+      "Read(//Users/micahshanks/Dev/bgg_data/**)",
+      "Bash(sqlite3 /Users/micahshanks/Dev/bgg_data/bgg_data/boardgame_agent/data/games.db \"SELECT game_id, game_name FROM games;\")",
+      "Bash(sqlite3 /Users/micahshanks/Dev/bgg_data/bgg_data/boardgame_agent/data/games.db \"SELECT game_id, doc_name, pdf_path FROM documents ORDER BY game_id;\")",
+      "Bash(curl -s \"https://qdrant.tech/documentation/concepts/hybrid-queries/\")",
+      "Bash(curl -s \"https://qdrant.tech/documentation/concepts/vectors/\")",
+      "Bash(curl -s \"https://qdrant.tech/articles/hybrid-search/\")",
+      "Bash(curl -s \"https://qdrant.tech/articles/bm42/\")",
+      "WebFetch(domain:qdrant.tech)",
+      "WebSearch",
+      "Bash(uv sync:*)",
+      "Bash(uv run python3 -c \":*)",
+      "Bash(curl -s http://localhost:11434/api/version)"
+    ],
+    "additionalDirectories": [
+      "/Users/micahshanks/Dev/bgg_data"
+    ]
+  }
+}

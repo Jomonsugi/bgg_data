@@ -25,6 +25,9 @@ def make_web_search_tool(game_id: str, db_path: Path = GAMES_DB_PATH):
         from tavily import TavilyClient
         from bgg_data.boardgame_agent.db.games import get_search_domains
 
+        if not TAVILY_API_KEY:
+            return "Web search unavailable — set TAVILY_API_KEY in your .env file."
+
         domains = get_search_domains(game_id, db_path)
 
         client = TavilyClient(api_key=TAVILY_API_KEY)

@@ -22,18 +22,24 @@ OPENAI_API_KEY: str | None = os.getenv("OPENAI_API_KEY")
 MODEL_OPTIONS: dict[str, str] = {
     "meta-llama/Llama-3.3-70B-Instruct-Turbo": "together",
     "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo": "together",
-    "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8": "together",
     "Qwen/Qwen3-235B-A22B-Instruct-2507-tput": "together",
-    "deepseek-ai/DeepSeek-V3": "together",
-    # "claude-sonnet-4-6": "anthropic",
+    "deepseek-ai/DeepSeek-V3.1": "together",
+    "claude-sonnet-4-6": "anthropic",
     "gpt-4o": "openai",
 }
 
 DEFAULT_MODEL: str = "meta-llama/Llama-3.3-70B-Instruct-Turbo"
 
 # ── Embeddings ────────────────────────────────────────────────────────────────
-# Changing this requires clicking "Rebuild index" in the sidebar.
-EMBED_MODEL_NAME: str = "mixedbread-ai/mxbai-embed-large-v1"
+# Dense embeddings via Ollama (local). Changing requires "Rebuild index".
+OLLAMA_EMBED_MODEL: str = "qwen3-embedding"
+OLLAMA_HOST: str = "http://localhost:11434"
+
+# Sparse embeddings via FastEmbed (SPLADE++) for hybrid search.
+SPARSE_EMBED_MODEL: str = "prithivida/Splade_PP_en_v1"
+
+# Display name for the sidebar.
+EMBED_MODEL_NAME: str = f"{OLLAMA_EMBED_MODEL} + {SPARSE_EMBED_MODEL}"
 
 # ── Retrieval ─────────────────────────────────────────────────────────────────
 # Default number of pages retrieved per query. Adjustable in the sidebar.

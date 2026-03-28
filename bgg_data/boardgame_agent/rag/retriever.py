@@ -1,36 +1,62 @@
-"""Qdrant retrieval for rulebook pages, filtered by game_id."""
+"""Qdrant hybrid retrieval for rulebook chunks, filtered by game_id.
+
+Uses Qdrant's native prefetch + RRF fusion to combine:
+  - Dense search  (Ollama qwen3-embedding) — semantic similarity
+  - Sparse search (SPLADE++) — exact term matching
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
-from fastembed import TextEmbedding
 from qdrant_client import QdrantClient, models
 
 from bgg_data.boardgame_agent.config import COLLECTION_NAME, RETRIEVAL_TOP_K as _DEFAULT_K
+from bgg_data.boardgame_agent.rag.indexer import embed_dense_single, embed_sparse
 
 
 def retrieve_pages(
     client: QdrantClient,
-    text_model: TextEmbedding,
     query: str,
     game_id: str,
     k: int = _DEFAULT_K,
 ) -> list[Any]:
-    """Return top-k Qdrant points for *query*, restricted to *game_id*."""
-    query_emb = list(text_model.embed([query]))[0]
+    """Return top-k Qdrant points for *query*, restricted to *game_id*.
+
+    Runs two prefetch branches (dense + sparse) and fuses with RRF server-side.
+    """
+    game_filter = models.Filter(
+        must=[
+            models.FieldCondition(
+                key="game_id",
+                match=models.MatchValue(value=game_id),
+            )
+        ]
+    )
+
+    # Prefetch pool is larger than final k so RRF has enough candidates.
+    prefetch_limit = k * 4
+
+    dense_emb = embed_dense_single(query)
+    sparse_emb = embed_sparse([query])[0]
 
     response = client.query_points(
         collection_name=COLLECTION_NAME,
-        query=query_emb.tolist(),
-        query_filter=models.Filter(
-            must=[
-                models.FieldCondition(
-                    key="game_id",
-                    match=models.MatchValue(value=game_id),
-                )
-            ]
-        ),
+        prefetch=[
+            models.Prefetch(
+                query=dense_emb,
+                using="dense",
+                filter=game_filter,
+                limit=prefetch_limit,
+            ),
+            models.Prefetch(
+                query=sparse_emb,
+                using="sparse",
+                filter=game_filter,
+                limit=prefetch_limit,
+            ),
+        ],
+        query=models.FusionQuery(fusion=models.Fusion.RRF),
         limit=k,
         with_payload=True,
     )

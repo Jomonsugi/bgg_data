@@ -10,8 +10,8 @@ That's it — graph.py picks up whatever make_all_tools() returns.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
-from fastembed import TextEmbedding
 from langchain_core.tools import BaseTool
 from qdrant_client import QdrantClient
 
@@ -25,17 +25,19 @@ def make_all_tools(
     game_id: str,
     game_name: str,
     qdrant_client: QdrantClient,
-    text_model: TextEmbedding,
+    config: dict[str, Any],
     db_path: Path = GAMES_DB_PATH,
-    top_k: int = 5,
+    enable_web_search: bool = True,
 ) -> list[BaseTool]:
     """Return the complete list of tools available to the agent.
 
     Tools are instantiated as closures bound to the current game context so
     every tool call is automatically scoped to the right game.
     """
-    return [
-        make_rag_tool(game_id, qdrant_client, text_model, top_k=top_k),
-        make_web_search_tool(game_id, db_path),
-        make_history_tool(game_id, text_model, db_path),
+    tools: list[BaseTool] = [
+        make_rag_tool(game_id, qdrant_client, config),
+        make_history_tool(game_id, db_path),
     ]
+    if enable_web_search:
+        tools.append(make_web_search_tool(game_id, db_path))
+    return tools

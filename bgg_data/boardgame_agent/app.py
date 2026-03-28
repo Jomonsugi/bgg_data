@@ -16,6 +16,7 @@ import streamlit as st
 from bgg_data.boardgame_agent.db.games import init_db, save_qa, set_qa_status
 from bgg_data.boardgame_agent.agent.graph import build_agent, run_query
 from bgg_data.boardgame_agent.agent.schemas import Citation, QAWithCitations
+from bgg_data.boardgame_agent.rag.indexer import embed_dense_single
 from bgg_data.boardgame_agent.ui.sidebar import render_sidebar
 from bgg_data.boardgame_agent.ui.pdf_panel import render_highlighted_page, show_pdf_viewer
 
@@ -31,9 +32,13 @@ st.set_page_config(
 # ── Cached resources ──────────────────────────────────────────────────────────
 
 @st.cache_resource
-def get_agent(game_id: str, game_name: str, model_name: str, top_k: int):
-    """Build and cache the LangGraph agent keyed by game + model + top_k."""
-    return build_agent(game_id, game_name, model_name=model_name, top_k=top_k)
+def get_agent(game_id: str, game_name: str, model_name: str, enable_web_search: bool):
+    """Build and cache the LangGraph agent.
+
+    Returns (compiled_graph, llm, qdrant_client, agent_config).
+    agent_config is a mutable dict — set agent_config["top_k"] before each query.
+    """
+    return build_agent(game_id, game_name, model_name=model_name, enable_web_search=enable_web_search)
 
 
 # ── Session state defaults ────────────────────────────────────────────────────
@@ -77,7 +82,7 @@ def _render_citation_chips(citations: list[dict], game_id: str) -> None:
 
 
 def _render_accept_buttons(msg: dict) -> None:
-    """Render accept / reject buttons for an assistant message.
+    """Render compact accept/reject icon buttons for an assistant message.
 
     Buttons update the DB immediately and toggle — clicking the active status
     again resets it to unreviewed (NULL), allowing corrections at any time.
@@ -88,21 +93,29 @@ def _render_accept_buttons(msg: dict) -> None:
 
     status = st.session_state.get(f"qa_status_{qa_id}")  # True / False / None
 
-    col_a, col_b, _ = st.columns([1, 1, 6])
-    accept_label = "✓ Accepted" if status is True else "✓ Accept"
-    reject_label = "✗ Rejected" if status is False else "✗ Reject"
+    col_a, col_b, _ = st.columns([0.3, 0.3, 5])
 
-    if col_a.button(accept_label, key=f"accept_{qa_id}", type="primary" if status is True else "secondary"):
-        new_status = None if status is True else True  # toggle off if already accepted
-        set_qa_status(qa_id, new_status)
-        st.session_state[f"qa_status_{qa_id}"] = new_status
-        st.rerun()
+    with col_a:
+        if st.button(
+            "✅" if status is True else "☑️",
+            key=f"accept_{qa_id}",
+            help="Accept" if status is not True else "Undo accept",
+        ):
+            new_status = None if status is True else True
+            set_qa_status(qa_id, new_status)
+            st.session_state[f"qa_status_{qa_id}"] = new_status
+            st.rerun()
 
-    if col_b.button(reject_label, key=f"reject_{qa_id}", type="primary" if status is False else "secondary"):
-        new_status = None if status is False else False  # toggle off if already rejected
-        set_qa_status(qa_id, new_status)
-        st.session_state[f"qa_status_{qa_id}"] = new_status
-        st.rerun()
+    with col_b:
+        if st.button(
+            "❌" if status is False else "✖️",
+            key=f"reject_{qa_id}",
+            help="Reject" if status is not False else "Undo reject",
+        ):
+            new_status = None if status is False else False
+            set_qa_status(qa_id, new_status)
+            st.session_state[f"qa_status_{qa_id}"] = new_status
+            st.rerun()
 
 
 def _render_web_sources(web_sources: list[str]) -> None:
@@ -167,7 +180,7 @@ def main() -> None:
     init_db()
     _init_session()
 
-    game_id, game_name, selected_model, top_k = render_sidebar()
+    game_id, game_name, selected_model, top_k, enable_web_search = render_sidebar()
 
     if game_id is None:
         st.markdown("## Welcome to the Board Game Rules Agent")
@@ -177,13 +190,39 @@ def main() -> None:
         )
         return
 
-    # Clear chat history only when the active game changes.
-    # Model and top-k changes are fluid — history stays intact.
+    # Clear chat history when the active game changes.
     if st.session_state.get("current_game_id") != game_id:
         st.session_state.messages = []
         st.session_state.active_citation = None
         st.session_state.active_doc = None
         st.session_state.current_game_id = game_id
+        st.session_state.current_model = selected_model
+        st.session_state.current_web_search = enable_web_search
+
+    # Warn when model or web search toggle changes mid-conversation.
+    def _reset_session():
+        st.session_state.messages = []
+        st.session_state.active_citation = None
+        st.session_state.active_doc = None
+        st.session_state.session_thread_id = str(uuid.uuid4())
+
+    model_changed = selected_model != st.session_state.get("current_model")
+    web_search_changed = enable_web_search != st.session_state.get("current_web_search")
+
+    if (model_changed or web_search_changed) and st.session_state.messages:
+        reason = "model" if model_changed else "web search setting"
+        st.warning(f"Changing the {reason} will reset the current conversation.")
+        if st.button(f"Confirm {reason} change", key="confirm_setting_change"):
+            _reset_session()
+            st.session_state.current_model = selected_model
+            st.session_state.current_web_search = enable_web_search
+            st.rerun()
+        # Block the rest of the page until confirmed — use previous settings.
+        selected_model = st.session_state.get("current_model", selected_model)
+        enable_web_search = st.session_state.get("current_web_search", enable_web_search)
+    else:
+        st.session_state.current_model = selected_model
+        st.session_state.current_web_search = enable_web_search
 
     # ── Header row: title + layout presets ───────────────────────────────────
     title_col, layout_col = st.columns([3, 1])
@@ -218,9 +257,10 @@ def main() -> None:
                 st.markdown(query)
 
             # Run agent
-            compiled, llm, qdrant_client, text_model = get_agent(
-                game_id, game_name, selected_model, top_k
+            compiled, llm, qdrant_client, agent_config = get_agent(
+                game_id, game_name, selected_model, enable_web_search
             )
+            agent_config["top_k"] = top_k
 
             with st.chat_message("assistant"):
                 with st.spinner("Consulting the rulebook…"):
@@ -241,7 +281,8 @@ def main() -> None:
             # Save to Q&A history (with embedding for future get_past_answers lookups)
             qa_id: int | None = None
             try:
-                query_emb = list(text_model.embed([query]))[0]
+                import numpy as np
+                query_emb = np.array(embed_dense_single(query), dtype=np.float32)
                 qa_id = save_qa(
                     game_id,
                     query,

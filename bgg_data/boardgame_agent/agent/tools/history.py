@@ -5,14 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from langchain_core.tools import tool
-from fastembed import TextEmbedding
 
 from bgg_data.boardgame_agent.config import GAMES_DB_PATH
+from bgg_data.boardgame_agent.rag.indexer import embed_dense_single
 
 
 def make_history_tool(
     game_id: str,
-    text_model: TextEmbedding,
     db_path: Path = GAMES_DB_PATH,
 ):
     """Return a get_past_answers tool bound to *game_id*."""
@@ -26,9 +25,10 @@ def make_history_tool(
         Use this to maintain consistency with prior rulings and to save time
         when the same question recurs.
         """
+        import numpy as np
         from bgg_data.boardgame_agent.db.games import get_similar_past_answers
 
-        query_emb = list(text_model.embed([query]))[0]
+        query_emb = np.array(embed_dense_single(query), dtype=np.float32)
         past = get_similar_past_answers(game_id, query_emb, top_k=3, db_path=db_path)
 
         if not past:

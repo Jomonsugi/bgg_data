@@ -2,91 +2,52 @@
 
 A local AI assistant that answers board game rules questions with **cited, highlighted** references to the official rulebook — built for fast lookups during actual gameplay.
 
-## How it works
+## Quick start
 
-1. You provide PDFs (rulebook + any supplemental docs) for a game once. Docling parses them into text + bounding boxes and caches the output.
-2. You ask a rules question in the chat.
-3. The agent retrieves the most relevant rulebook pages (RAG), optionally searches BoardGameGeek for community clarifications, and returns a structured answer with citations.
-4. Click any citation chip to jump to that exact page in the PDF with the relevant passage highlighted.
+Install prerequisites:
+- [uv](https://docs.astral.sh/uv/getting-started/installation/): `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- [Ollama](https://ollama.com/download): download the macOS app, then `ollama pull qwen3-embedding`
+- A [Together API](https://www.together.ai/) key (free tier works — this is the default LLM provider)
 
----
-
-## Setup
-
-### 1. Install dependencies
+Then:
 
 ```bash
-cd /path/to/bgg_data
-uv sync   # or: pip install -e ".[dev]"
-```
-
-### 2. Configure API keys
-
-Either export from your shell:
-
-```bash
-export TOGETHER_API_KEY="..."
-export TAVILY_API_KEY="..."
-```
-
-Or create a `.env` file in `bgg_data/boardgame_agent/`:
-
-```bash
+cd bgg_data
+uv sync
 cp bgg_data/boardgame_agent/.env.example bgg_data/boardgame_agent/.env
-# edit .env and fill in your keys
+# Edit .env and add your TOGETHER_API_KEY
+uv run streamlit run bgg_data/boardgame_agent/app.py
 ```
 
-### 3. Run the app
-
-From the project root (where `pyproject.toml` lives):
-
-```bash
-uv run python -m streamlit run bgg_data/boardgame_agent/app.py
-```
-
-This runs the app as an installed module so `bgg_data` imports resolve correctly.
+Create a game in the sidebar, upload a rulebook PDF, and ask a question. That's it.
 
 ---
 
-## First use
+## Using the app
 
-1. In the sidebar, click **Add new game** → enter a game name → **Create game**.
-2. Upload your rulebook PDF(s) via the **Add PDF(s)** uploader, or paste a folder path and click **Index folder**.
-3. Docling will parse and cache the PDFs (one-time, takes ~30–60s per document).
-4. Ask a question in the chat.
+**Create a game and add documents.** Click **Add new game** — the new game is auto-selected. Upload rulebook PDFs or point to a folder. Docling parses each PDF once (can take a few minutes for large rulebooks). The first query also downloads the SPLADE++ sparse model (~530 MB, one-time).
 
----
+**Ask questions.** Type a rules question in the chat. The agent searches the indexed rulebook, retrieves relevant pages, and returns a cited answer. Click any **citation chip** to jump to that page in the PDF viewer with the passage highlighted.
 
-## Switching models
+**Rate answers.** Each response has ✅ and ❌ buttons. Accepted answers feed into the `get_past_answers` tool so the agent stays consistent with prior verified rulings. Click again to undo.
 
-### LLM (Together API)
-Change `TOGETHER_MODEL_NAME` in `.env` or `config.py`. Takes effect immediately — no reindexing needed.
+**Top-k slider.** Adjusts how many rulebook pages are retrieved per query. Takes effect immediately — no session reset.
 
-### Embedding model
-Change `EMBED_MODEL_NAME` in `.env` or `config.py`, then click **Rebuild index** in the sidebar. This re-embeds all cached Docling output (Docling does **not** re-run). Only the vector representations are rebuilt.
+**Web search (optional).** Requires a `TAVILY_API_KEY` in `.env`. When set, a checkbox appears in the sidebar to enable/disable web search. Add trusted domains (e.g., `boardgamegeek.com`) to restrict where the agent searches.
 
----
+**Switching LLM models.** Use the dropdown in the sidebar. Changing the model resets the current conversation (you'll be warned first).
 
-## Adding more documents to a game
+**Rebuild index.** After changing the embedding model in `config.py`, click **Rebuild index** in the sidebar. This re-embeds all cached documents — Docling does not re-run.
 
-Upload additional PDFs in the sidebar at any time. New documents are added to the existing index without affecting anything already indexed.
+## LLM providers
 
----
+The default models use Together API, but you can use Anthropic, OpenAI, or any combination. Models and their providers are configured in `config.py` under `MODEL_OPTIONS` — map each model ID to `"together"`, `"anthropic"`, or `"openai"`. Only add API keys for the providers you use. If a key is missing when you select a model, you'll get a clear error telling you which key to set.
 
-## Web search domains
+## Embeddings
 
-By default the agent restricts web search to `boardgamegeek.com`. You can add or remove domains in the sidebar per game, or clear all to allow unrestricted search.
+Dense vectors via Ollama (default `qwen3-embedding`, 4096-d). Sparse vectors via FastEmbed SPLADE++. Results are fused with Qdrant-native RRF hybrid search. Any Ollama embedding model can be used — change `OLLAMA_EMBED_MODEL` in `config.py` and click **Rebuild index**.
 
----
-
-## Adding new agent tools (for developers)
-
-1. Create `bgg_data/boardgame_agent/agent/tools/your_tool.py` with a `make_your_tool()` factory that returns a `@tool`-decorated function.
-2. Import it in `agent/tools/__init__.py` and add it to the `make_all_tools()` return list.
-
-That's the only change needed — `graph.py` picks up whatever `make_all_tools()` returns.
-
----
+Ollama launches automatically if the app is installed but not running.
 
 ## Project structure
 
@@ -100,14 +61,14 @@ boardgame_agent/
 │   ├── schemas.py      # QAWithCitations, Citation
 │   ├── state.py        # AgentState
 │   └── tools/
-│       ├── __init__.py # Tool registry (add new tools here)
-│       ├── rag.py      # search_rulebook
-│       ├── web_search.py # search_web
+│       ├── __init__.py # Tool registry
+│       ├── rag.py      # search_rulebook (hybrid dense + sparse)
+│       ├── web_search.py # search_web (Tavily, optional)
 │       └── history.py  # get_past_answers
 ├── rag/
 │   ├── extractor.py    # Docling PDF parsing + JSON cache
-│   ├── indexer.py      # Qdrant indexing + reindex_all()
-│   └── retriever.py    # Vector search
+│   ├── indexer.py      # Qdrant hybrid indexing (Ollama + SPLADE++)
+│   └── retriever.py    # Hybrid retrieval with RRF fusion
 ├── db/
 │   └── games.py        # SQLite: games, documents, domains, Q&A history
 ├── ui/
@@ -116,9 +77,7 @@ boardgame_agent/
 └── data/               # Runtime data (gitignored)
     ├── qdrant/
     ├── games.db
-    ├── agent_checkpoints.db
-    └── games/
-        └── {game_id}/
-            ├── pdfs/
-            └── extracted/   # Cached Docling JSON
+    └── games/{game_id}/
+        ├── pdfs/
+        └── extracted/  # Cached Docling JSON
 ```
