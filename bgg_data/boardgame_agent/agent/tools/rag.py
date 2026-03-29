@@ -1,4 +1,4 @@
-"""search_rulebook tool — hybrid RAG retrieval from indexed PDF documents."""
+"""search_rulebook tool — hybrid RAG retrieval from indexed documents."""
 
 from __future__ import annotations
 
@@ -22,14 +22,20 @@ def make_rag_tool(
     """
 
     @tool
-    def search_rulebook(query: str) -> str:
-        """Search the indexed rulebook and supplemental PDF documents for rules
-        relevant to the query.
+    def search_rulebook(query: str, source: str = "all") -> str:
+        """Search the indexed documents for rules relevant to the query.
 
         Always call this tool first for any rules question. Returns page text
         and numbered bounding-box references you must use in citations.
+
+        Args:
+            query: The search query.
+            source: Filter by document tag. Use a specific tag like 'rulebook'
+                    or 'faq' to search only those documents, or 'all' to search
+                    everything.
         """
-        points = retrieve_pages(qdrant_client, query, game_id, k=config["top_k"])
+        doc_tag = None if source == "all" else source
+        points = retrieve_pages(qdrant_client, query, game_id, k=config["top_k"], doc_tag=doc_tag)
         return format_pages_for_llm(points)
 
     return search_rulebook

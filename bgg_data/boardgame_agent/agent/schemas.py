@@ -5,23 +5,26 @@ from pydantic import BaseModel, Field
 
 
 class Citation(BaseModel):
-    doc_name: str = Field(description="Stem of the source PDF (e.g. 'Ark-Nova_342942_rules')")
-    page_num: int = Field(description="1-indexed page number in that document")
+    doc_name: str = Field(description="Document name exactly as it appears in the DOCUMENT header")
+    page_num: int = Field(description="1-indexed page number (or section number for markdown docs)")
     bbox_indices: List[int] = Field(
-        description="Indices into that page's bbox array that contain the cited text"
+        default=[],
+        description="Indices into that page's bbox array that contain the cited text. Empty list if not applicable.",
     )
+
+
+class WebSource(BaseModel):
+    url: str = Field(description="URL of the web source")
+    finding: str = Field(description="One-sentence summary of what was found at this source")
 
 
 class QAWithCitations(BaseModel):
-    reasoning: str = Field(description="Brief chain-of-thought explaining the answer")
-    answer: str = Field(description="Clear, concise answer to the rules question")
+    answer: str = Field(description="The agent's conversational answer — kept as-is")
     citations: List[Citation] = Field(
-        description="Rulebook citations grounding the answer (always required)"
-    )
-    web_sources: List[str] = Field(
         default=[],
-        description=(
-            "URLs from search_web results that were used to confirm or clarify the answer. "
-            "Empty list if search_web was not called."
-        ),
+        description="Document citations grounding factual claims. Empty for conversational turns.",
+    )
+    web_sources: List[WebSource] = Field(
+        default=[],
+        description="Web sources used, each with a URL and a summary of what was found.",
     )

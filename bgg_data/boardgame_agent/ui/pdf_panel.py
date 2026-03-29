@@ -18,8 +18,13 @@ from bgg_data.boardgame_agent.config import DATA_DIR
 from bgg_data.boardgame_agent.rag.extractor import load_cached_pages
 
 
-def get_pdf_path(game_id: str, doc_name: str) -> Path:
-    return DATA_DIR / "games" / game_id / "pdfs" / f"{doc_name}.pdf"
+def get_pdf_path(game_id: str, doc_name: str) -> Path | None:
+    """Find the PDF for a document, checking both docs/ (new) and pdfs/ (legacy)."""
+    for subdir in ("docs", "pdfs"):
+        p = DATA_DIR / "games" / game_id / subdir / f"{doc_name}.pdf"
+        if p.exists():
+            return p
+    return None
 
 
 def render_highlighted_page(
@@ -38,7 +43,7 @@ def render_highlighted_page(
     The conversion is: top_y = page_height - docling_y.
     """
     pdf_path = get_pdf_path(game_id, doc_name)
-    if not pdf_path.exists():
+    if pdf_path is None:
         return None
 
     pages = load_cached_pages(game_id, doc_name)
@@ -81,7 +86,7 @@ def show_pdf_viewer(game_id: str, doc_name: str, scroll_to_page: int = 1) -> Non
     import streamlit as st
 
     pdf_path = get_pdf_path(game_id, doc_name)
-    if not pdf_path.exists():
+    if pdf_path is None:
         st.warning(f"PDF not found: {doc_name}.pdf")
         return
 

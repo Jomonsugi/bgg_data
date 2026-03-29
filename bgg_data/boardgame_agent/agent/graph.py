@@ -80,6 +80,7 @@ def build_agent(
     before each query so the sidebar slider takes effect without rebuilding.
     """
     from bgg_data.boardgame_agent.config import RETRIEVAL_TOP_K
+    from bgg_data.boardgame_agent.db.games import get_documents
 
     qdrant_client = get_qdrant_client()
     agent_config: dict = {"top_k": RETRIEVAL_TOP_K}
@@ -88,10 +89,14 @@ def build_agent(
         enable_web_search=enable_web_search,
     )
 
+    # Build document list for the system prompt.
+    docs = get_documents(game_id, GAMES_DB_PATH)
+    doc_tuples = [(d["doc_name"], d.get("doc_tag", "rulebook")) for d in docs]
+
     llm = _build_llm(model_name)
     llm_with_tools = llm.bind_tools(tools)
     system_message = SystemMessage(
-        content=build_system_prompt(game_name, enable_web_search)
+        content=build_system_prompt(game_name, documents=doc_tuples, web_search_enabled=enable_web_search)
     )
 
     # ── Nodes ─────────────────────────────────────────────────────────────────
@@ -126,10 +131,14 @@ def build_agent(
     tool_node = ToolNode(tools)
 
     def format_answer(state: AgentState) -> dict:
-        """Produce structured QAWithCitations from the completed message history."""
+        """Extract structured citations from the agent's answer.
+
+        The agent's natural answer is preserved as-is. The formatter only
+        extracts citation and web source metadata from the tool outputs.
+        """
         structured_llm = llm.with_structured_output(QAWithCitations)
 
-        # Collect tool outputs so the formatter has full citation context.
+        # Collect tool outputs so the formatter can extract citation details.
         tool_outputs = "\n\n".join(
             f"[Tool: {m.name}]\n{m.content}"
             for m in state["messages"]
@@ -142,8 +151,10 @@ def build_agent(
         agent_answer = last_ai.content if last_ai else ""
 
         format_input = (
-            f"Agent answer:\n{agent_answer}\n\n"
-            f"Tool outputs used:\n{tool_outputs}"
+            f"Agent answer (preserve this text as-is in the answer field):\n"
+            f"{agent_answer}\n\n"
+            f"Tool outputs (extract citations and web sources from these):\n"
+            f"{tool_outputs}"
         )
         qa: QAWithCitations = structured_llm.invoke(
             [SystemMessage(content=FORMAT_PROMPT), HumanMessage(content=format_input)]
@@ -205,5 +216,5 @@ def run_query(
     )
     raw = result.get("final_answer") or {}
     return QAWithCitations(**raw) if raw else QAWithCitations(
-        reasoning="", answer="No answer produced.", citations=[]
+        answer="No answer produced.", citations=[]
     )

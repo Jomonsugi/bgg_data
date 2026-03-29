@@ -20,19 +20,29 @@ def retrieve_pages(
     query: str,
     game_id: str,
     k: int = _DEFAULT_K,
+    doc_tag: str | None = None,
 ) -> list[Any]:
     """Return top-k Qdrant points for *query*, restricted to *game_id*.
 
+    Optionally filter by *doc_tag* (e.g. ``"rulebook"``, ``"faq"``).
+    Pass ``None`` to search all documents for the game.
+
     Runs two prefetch branches (dense + sparse) and fuses with RRF server-side.
     """
-    game_filter = models.Filter(
-        must=[
+    conditions = [
+        models.FieldCondition(
+            key="game_id",
+            match=models.MatchValue(value=game_id),
+        )
+    ]
+    if doc_tag is not None:
+        conditions.append(
             models.FieldCondition(
-                key="game_id",
-                match=models.MatchValue(value=game_id),
+                key="doc_tag",
+                match=models.MatchValue(value=doc_tag),
             )
-        ]
-    )
+        )
+    game_filter = models.Filter(must=conditions)
 
     # Prefetch pool is larger than final k so RRF has enough candidates.
     prefetch_limit = k * 4

@@ -94,23 +94,31 @@ def _extract_single_pdf(
 
 
 def get_or_extract(
-    pdf_path: Path,
+    doc_path: Path,
     game_id: str,
     doc_name: str,
     force: bool = False,
 ) -> list[dict[str, Any]]:
-    """Return cached Docling output for *pdf_path*, running Docling if needed.
+    """Return cached extraction for *doc_path*, running the appropriate extractor if needed.
 
+    Dispatches based on file extension: .pdf → Docling, .md → markdown parser.
     Cache lives at data/games/{game_id}/extracted/{doc_name}.json.
-    Pass force=True to ignore the cache and re-run Docling.
+    Pass force=True to ignore the cache and re-extract.
     """
     cache_path = DATA_DIR / "games" / game_id / "extracted" / f"{doc_name}.json"
 
     if cache_path.exists() and not force:
         return json.loads(cache_path.read_text(encoding="utf-8"))
 
-    print(f"  Docling extracting: {pdf_path.name} …")
-    pages = _extract_single_pdf(pdf_path, game_id, doc_name)
+    ext = doc_path.suffix.lower()
+    if ext == ".md":
+        from bgg_data.boardgame_agent.rag.markdown_extractor import extract_markdown
+        print(f"  Parsing markdown: {doc_path.name} …")
+        pages = extract_markdown(doc_path, game_id, doc_name)
+    else:
+        print(f"  Docling extracting: {doc_path.name} …")
+        pages = _extract_single_pdf(doc_path, game_id, doc_name)
+
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(json.dumps(pages), encoding="utf-8")
     return pages
@@ -147,14 +155,18 @@ def chunk_by_sections(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         chunk_text = "\n\n".join(b["text"] for b in chunk_bboxes if b.get("text"))
         if not chunk_text.strip():
             return
-        chunks.append({
+        chunk = {
             "game_id": page["game_id"],
             "doc_name": page["doc_name"],
             "page_num": page["page_num"],
             "text": chunk_text,
             "bboxes": chunk_bboxes,
             "original_bbox_indices": bbox_indices,
-        })
+        }
+        # Carry through any extra metadata (e.g. doc_tag) from the page dict.
+        if "doc_tag" in page:
+            chunk["doc_tag"] = page["doc_tag"]
+        chunks.append(chunk)
 
     for page in pages:
         bboxes: list[dict[str, Any]] = page.get("bboxes", [])

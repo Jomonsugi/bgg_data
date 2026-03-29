@@ -18,7 +18,8 @@ from bgg_data.boardgame_agent.agent.graph import build_agent, run_query
 from bgg_data.boardgame_agent.agent.schemas import Citation, QAWithCitations
 from bgg_data.boardgame_agent.rag.indexer import embed_dense_single
 from bgg_data.boardgame_agent.ui.sidebar import render_sidebar
-from bgg_data.boardgame_agent.ui.pdf_panel import render_highlighted_page, show_pdf_viewer
+from bgg_data.boardgame_agent.ui.pdf_panel import get_pdf_path, render_highlighted_page, show_pdf_viewer
+from bgg_data.boardgame_agent.ui.markdown_panel import get_md_path, render_highlighted_markdown, show_markdown_viewer
 
 # ── Page config ───────────────────────────────────────────────────────────────
 
@@ -82,49 +83,47 @@ def _render_citation_chips(citations: list[dict], game_id: str) -> None:
 
 
 def _render_accept_buttons(msg: dict) -> None:
-    """Render compact accept/reject icon buttons for an assistant message.
+    """Render thumbs-up/down feedback for an assistant message.
 
-    Buttons update the DB immediately and toggle — clicking the active status
-    again resets it to unreviewed (NULL), allowing corrections at any time.
+    Uses Streamlit's native feedback widget for consistent sizing and centering.
+    Maps: thumbs-up (1) → accepted, thumbs-down (0) → rejected.
     """
     qa_id = msg.get("qa_id")
     if qa_id is None:
         return
 
     status = st.session_state.get(f"qa_status_{qa_id}")  # True / False / None
+    # st.feedback returns 0 for thumbs-down, 1 for thumbs-up, None if not clicked.
+    # Map our stored status to the widget's default index.
+    default_index = 1 if status is True else (0 if status is False else None)
 
-    col_a, col_b, _ = st.columns([0.3, 0.3, 5])
+    result = st.feedback(
+        "thumbs",
+        key=f"feedback_{qa_id}",
+        disabled=False,
+    )
 
-    with col_a:
-        if st.button(
-            "✅" if status is True else "☑️",
-            key=f"accept_{qa_id}",
-            help="Accept" if status is not True else "Undo accept",
-        ):
-            new_status = None if status is True else True
-            set_qa_status(qa_id, new_status)
-            st.session_state[f"qa_status_{qa_id}"] = new_status
-            st.rerun()
-
-    with col_b:
-        if st.button(
-            "❌" if status is False else "✖️",
-            key=f"reject_{qa_id}",
-            help="Reject" if status is not False else "Undo reject",
-        ):
-            new_status = None if status is False else False
+    if result is not None:
+        new_status = True if result == 1 else False
+        if new_status != status:
             set_qa_status(qa_id, new_status)
             st.session_state[f"qa_status_{qa_id}"] = new_status
             st.rerun()
 
 
-def _render_web_sources(web_sources: list[str]) -> None:
-    """Render clickable web source links when search_web was used."""
+def _render_web_sources(web_sources: list[dict | str]) -> None:
+    """Render web sources with findings and clickable links."""
     if not web_sources:
         return
     st.markdown("**Web sources:**")
-    for url in web_sources:
-        st.markdown(f"- [{url}]({url})")
+    for ws in web_sources:
+        if isinstance(ws, dict):
+            finding = ws.get("finding", "")
+            url = ws.get("url", "")
+            st.markdown(f"- {finding} — [{url}]({url})")
+        else:
+            # Backward compat with old plain-URL format.
+            st.markdown(f"- [{ws}]({ws})")
 
 
 def _render_message(msg: dict, game_id: str) -> None:
@@ -138,9 +137,17 @@ def _render_message(msg: dict, game_id: str) -> None:
             _render_accept_buttons(msg)
 
 
-# ── PDF panel ─────────────────────────────────────────────────────────────────
+# ── Document panel ────────────────────────────────────────────────────────────
 
-def _render_pdf_panel(game_id: str) -> None:
+def _is_pdf_doc(game_id: str, doc_name: str) -> bool:
+    return get_pdf_path(game_id, doc_name) is not None
+
+
+def _is_md_doc(game_id: str, doc_name: str) -> bool:
+    return get_md_path(game_id, doc_name) is not None
+
+
+def _render_doc_panel(game_id: str) -> None:
     citation = st.session_state.active_citation
     active_doc = st.session_state.active_doc
 
@@ -149,29 +156,50 @@ def _render_pdf_panel(game_id: str) -> None:
         page_num = citation.get("page_num", 1)
         bbox_indices = citation.get("bbox_indices", [])
 
-        st.markdown(f"#### {doc_name} · Page {page_num}")
+        if _is_pdf_doc(game_id, doc_name):
+            st.markdown(f"#### {doc_name} · Page {page_num}")
+            img = render_highlighted_page(game_id, doc_name, page_num, bbox_indices)
+            if img:
+                st.image(img, width='stretch')
+            else:
+                st.warning("Could not render page — ensure the document is indexed.")
 
-        # Render highlighted page image at the top
-        img = render_highlighted_page(game_id, doc_name, page_num, bbox_indices)
-        if img:
-            st.image(img, width='stretch')
+            if st.button("Clear citation", key="clear_citation"):
+                st.session_state.active_citation = None
+                st.rerun()
+
+            st.divider()
+            st.markdown("**Full document:**")
+            show_pdf_viewer(game_id, doc_name, scroll_to_page=page_num)
+
+        elif _is_md_doc(game_id, doc_name):
+            st.markdown(f"#### {doc_name} · Section {page_num}")
+            html = render_highlighted_markdown(game_id, doc_name, page_num, bbox_indices)
+            if html:
+                st.markdown(html, unsafe_allow_html=True)
+            else:
+                st.warning("Could not render section — ensure the document is indexed.")
+
+            if st.button("Clear citation", key="clear_citation"):
+                st.session_state.active_citation = None
+                st.rerun()
+
+            st.divider()
+            st.markdown("**Full document:**")
+            show_markdown_viewer(game_id, doc_name, scroll_to_section=page_num)
+
         else:
-            st.warning("Could not render page — ensure the PDF is indexed.")
-
-        if st.button("Clear citation", key="clear_citation"):
-            st.session_state.active_citation = None
-            st.rerun()
-
-        st.divider()
-        st.markdown("**Full document:**")
-        show_pdf_viewer(game_id, doc_name, scroll_to_page=page_num)
+            st.warning(f"Document file not found for: {doc_name}")
 
     elif active_doc:
         st.markdown(f"#### {active_doc}")
-        show_pdf_viewer(game_id, active_doc)
+        if _is_pdf_doc(game_id, active_doc):
+            show_pdf_viewer(game_id, active_doc)
+        elif _is_md_doc(game_id, active_doc):
+            show_markdown_viewer(game_id, active_doc)
     else:
-        st.markdown("#### PDF Viewer")
-        st.info("Click a citation in the chat to view the source page with highlights.")
+        st.markdown("#### Document Viewer")
+        st.info("Click a citation in the chat to view the source with highlights.")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -271,10 +299,11 @@ def main() -> None:
                 citations_dicts = [c.model_dump() for c in qa.citations]
                 _render_citation_chips(citations_dicts, game_id)
 
-                if qa.web_sources:
-                    _render_web_sources(qa.web_sources)
+                web_source_dicts = [ws.model_dump() if hasattr(ws, 'model_dump') else ws for ws in qa.web_sources]
+                if web_source_dicts:
+                    _render_web_sources(web_source_dicts)
 
-                # Set the first citation's doc as the active PDF
+                # Set the first citation's doc as the active document
                 if qa.citations:
                     st.session_state.active_doc = qa.citations[0].doc_name
 
@@ -303,7 +332,7 @@ def main() -> None:
                     "role": "assistant",
                     "content": qa.answer,
                     "citations": citations_dicts,
-                    "web_sources": qa.web_sources,
+                    "web_sources": web_source_dicts,
                     "qa_id": qa_id,
                 }
             )
@@ -312,7 +341,7 @@ def main() -> None:
 
     # ── PDF column ────────────────────────────────────────────────────────────
     with pdf_col:
-        _render_pdf_panel(game_id)
+        _render_doc_panel(game_id)
 
 
 if __name__ == "__main__":

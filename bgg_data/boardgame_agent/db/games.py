@@ -52,10 +52,11 @@ def init_db(db_path: Path = GAMES_DB_PATH) -> None:
                 id                 INTEGER PRIMARY KEY AUTOINCREMENT,
                 game_id            TEXT NOT NULL,
                 doc_name           TEXT NOT NULL,
-                pdf_path           TEXT NOT NULL,
+                pdf_path           TEXT NOT NULL,  -- stores path for any doc type (PDF, markdown)
                 extracted_json_path TEXT,
                 indexed_at         TEXT,
                 embed_model        TEXT,
+                doc_tag            TEXT NOT NULL DEFAULT 'rulebook',
                 UNIQUE(game_id, doc_name)
             );
 
@@ -80,6 +81,11 @@ def init_db(db_path: Path = GAMES_DB_PATH) -> None:
             );
             """
         )
+        # Migration: add doc_tag column if missing (added after initial schema).
+        try:
+            conn.execute("ALTER TABLE documents ADD COLUMN doc_tag TEXT NOT NULL DEFAULT 'rulebook'")
+        except sqlite3.OperationalError:
+            pass  # column already exists
 
 
 # ── Games ─────────────────────────────────────────────────────────────────────
@@ -127,6 +133,7 @@ def register_document(
     pdf_path: Path,
     extracted_json_path: Path | None = None,
     embed_model: str | None = None,
+    doc_tag: str = "rulebook",
     db_path: Path = GAMES_DB_PATH,
 ) -> None:
     from bgg_data.boardgame_agent.config import EMBED_MODEL_NAME
@@ -135,13 +142,14 @@ def register_document(
         conn.execute(
             """
             INSERT INTO documents
-                (game_id, doc_name, pdf_path, extracted_json_path, indexed_at, embed_model)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (game_id, doc_name, pdf_path, extracted_json_path, indexed_at, embed_model, doc_tag)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(game_id, doc_name) DO UPDATE SET
                 pdf_path           = excluded.pdf_path,
                 extracted_json_path = excluded.extracted_json_path,
                 indexed_at         = excluded.indexed_at,
-                embed_model        = excluded.embed_model
+                embed_model        = excluded.embed_model,
+                doc_tag            = excluded.doc_tag
             """,
             (
                 game_id,
@@ -150,7 +158,22 @@ def register_document(
                 str(extracted_json_path) if extracted_json_path else None,
                 datetime.utcnow().isoformat(),
                 embed_model or EMBED_MODEL_NAME,
+                doc_tag,
             ),
+        )
+
+
+def update_doc_tag(
+    game_id: str,
+    doc_name: str,
+    doc_tag: str,
+    db_path: Path = GAMES_DB_PATH,
+) -> None:
+    """Update the tag for a document."""
+    with _connect(db_path) as conn:
+        conn.execute(
+            "UPDATE documents SET doc_tag = ? WHERE game_id = ? AND doc_name = ?",
+            (doc_tag, game_id, doc_name),
         )
 
 

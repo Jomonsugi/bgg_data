@@ -222,6 +222,40 @@ def remove_doc_from_index(
     )
 
 
+# ── Tag updates (metadata-only, no re-embedding) ─────────────────────────────
+
+def update_doc_tag_in_index(
+    game_id: str,
+    doc_name: str,
+    doc_tag: str,
+    client: QdrantClient | None = None,
+) -> None:
+    """Update the doc_tag payload on all Qdrant points for a document.
+
+    This is a metadata-only operation — no re-embedding needed.
+    """
+    if client is None:
+        client = get_qdrant_client()
+    if not client.collection_exists(COLLECTION_NAME):
+        return
+    client.set_payload(
+        collection_name=COLLECTION_NAME,
+        payload={"doc_tag": doc_tag},
+        points=models.FilterSelector(
+            filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="game_id", match=models.MatchValue(value=game_id)
+                    ),
+                    models.FieldCondition(
+                        key="doc_name", match=models.MatchValue(value=doc_name)
+                    ),
+                ]
+            )
+        ),
+    )
+
+
 # ── Full reindex ─────────────────────────────────────────────────────────────
 
 def reindex_all() -> None:

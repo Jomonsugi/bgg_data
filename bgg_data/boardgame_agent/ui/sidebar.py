@@ -28,9 +28,10 @@ from bgg_data.boardgame_agent.db.games import (
     init_db,
     register_document,
     remove_search_domain,
+    update_doc_tag,
 )
 from bgg_data.boardgame_agent.rag.extractor import chunk_by_sections, get_or_extract
-from bgg_data.boardgame_agent.rag.indexer import build_index, reindex_all, remove_doc_from_index
+from bgg_data.boardgame_agent.rag.indexer import build_index, reindex_all, remove_doc_from_index, update_doc_tag_in_index
 
 
 def _game_id_from_name(name: str) -> str:
@@ -120,9 +121,21 @@ def render_sidebar() -> tuple[str | None, str | None, str, int, bool]:
 
         if docs:
             for doc in docs:
-                col1, col2 = st.columns([4, 1])
-                col1.write(f"📄 {doc['doc_name']}")
-                if col2.button("✕", key=f"del_doc_{doc['doc_name']}", help="Remove"):
+                col_name, col_tag, col_del = st.columns([3, 2, 1])
+                col_name.write(f"📄 {doc['doc_name']}")
+                current_tag = doc.get("doc_tag", "rulebook")
+                new_tag = col_tag.text_input(
+                    "tag",
+                    value=current_tag,
+                    key=f"tag_{doc['doc_name']}",
+                    label_visibility="collapsed",
+                    placeholder="rulebook",
+                )
+                if new_tag != current_tag:
+                    update_doc_tag(selected_game_id, doc["doc_name"], new_tag)
+                    update_doc_tag_in_index(selected_game_id, doc["doc_name"], new_tag)
+                    st.rerun()
+                if col_del.button("✕", key=f"del_doc_{doc['doc_name']}", help="Remove"):
                     _remove_document(selected_game_id, doc["doc_name"])
                     st.rerun()
         else:
@@ -130,18 +143,31 @@ def render_sidebar() -> tuple[str | None, str | None, str, int, bool]:
 
         # Upload new documents
         uploaded = st.file_uploader(
-            "Add PDF(s)",
-            type="pdf",
+            "Add document(s)",
+            type=["pdf", "md"],
             accept_multiple_files=True,
             key="doc_uploader",
         )
-        if uploaded and st.button(
-            f"Index to **{selected_game_name}**",
-            key="index_pdfs_btn",
-            type="primary",
-        ):
-            _index_uploaded_pdfs(selected_game_id, uploaded)
-            st.rerun()
+        if uploaded:
+            st.caption("Tag each document before indexing:")
+            file_tags: dict[str, str] = {}
+            for uf in uploaded:
+                col_name, col_tag = st.columns([3, 2])
+                col_name.write(f"📄 {uf.name}")
+                file_tags[uf.name] = col_tag.text_input(
+                    "tag",
+                    value="rulebook",
+                    key=f"upload_tag_{uf.name}",
+                    label_visibility="collapsed",
+                    placeholder="rulebook",
+                )
+            if st.button(
+                f"Index to **{selected_game_name}**",
+                key="index_pdfs_btn",
+                type="primary",
+            ):
+                _index_uploaded_docs(selected_game_id, uploaded, file_tags)
+                st.rerun()
 
         # Folder path shortcut (useful for local use)
         folder_path = st.text_input(
@@ -151,7 +177,7 @@ def render_sidebar() -> tuple[str | None, str | None, str, int, bool]:
             f"Index folder to **{selected_game_name}**",
             key="index_folder_btn",
         ):
-            _index_folder(selected_game_id, Path(folder_path))
+            _index_folder(selected_game_id, Path(folder_path), upload_tag)
             st.rerun()
 
         st.divider()
@@ -192,39 +218,54 @@ def render_sidebar() -> tuple[str | None, str | None, str, int, bool]:
 
 # ── Document management helpers ───────────────────────────────────────────────
 
-def _copy_pdf_to_store(game_id: str, pdf_path: Path, doc_name: str) -> Path:
-    dest_dir = DATA_DIR / "games" / game_id / "pdfs"
+_SUPPORTED_EXTENSIONS = {".pdf", ".md"}
+
+
+def _copy_doc_to_store(game_id: str, src_path: Path, doc_name: str) -> Path:
+    """Copy a document into the game's docs directory, preserving extension."""
+    ext = src_path.suffix.lower()
+    dest_dir = DATA_DIR / "games" / game_id / "docs"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"{doc_name}.pdf"
-    if dest != pdf_path:
-        shutil.copy2(pdf_path, dest)
+    dest = dest_dir / f"{doc_name}{ext}"
+    if dest != src_path:
+        shutil.copy2(src_path, dest)
     return dest
 
 
-def _index_single_pdf(game_id: str, pdf_path: Path, doc_name: str) -> None:
-    stored_path = _copy_pdf_to_store(game_id, pdf_path, doc_name)
+def _index_single_doc(game_id: str, doc_path: Path, doc_name: str, doc_tag: str = "rulebook") -> None:
+    """Extract, chunk, embed, and register a single document (PDF or markdown)."""
+    stored_path = _copy_doc_to_store(game_id, doc_path, doc_name)
     pages = get_or_extract(stored_path, game_id, doc_name)
-    print(f"  {doc_name}: {len(pages)} pages extracted")
+    print(f"  {doc_name}: {len(pages)} pages/sections extracted")
+    # Inject doc_tag into page dicts so it flows into the Qdrant payload.
+    for page in pages:
+        page["doc_tag"] = doc_tag
     chunks = chunk_by_sections(pages)
     print(f"  {doc_name}: {len(chunks)} chunks → embedding…")
     build_index(chunks)
     print(f"  {doc_name}: indexing complete")
     cache_path = DATA_DIR / "games" / game_id / "extracted" / f"{doc_name}.json"
-    register_document(game_id, doc_name, stored_path, cache_path)
+    register_document(game_id, doc_name, stored_path, cache_path, doc_tag=doc_tag)
 
 
-def _index_uploaded_pdfs(game_id: str, uploaded_files) -> None:
+def _index_uploaded_docs(game_id: str, uploaded_files, file_tags: dict[str, str]) -> None:
+    """Index uploaded files with per-file tags.
+
+    *file_tags* maps filename → tag (e.g. ``{"rules.pdf": "rulebook", "faq.md": "faq"}``).
+    """
     import tempfile, os
 
     progress = st.progress(0, text="Indexing…")
     for i, uf in enumerate(uploaded_files):
         doc_name = Path(uf.name).stem
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        ext = Path(uf.name).suffix.lower()
+        tag = file_tags.get(uf.name, "rulebook")
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
             tmp.write(uf.read())
             tmp_path = Path(tmp.name)
         try:
             with st.spinner(f"Processing {uf.name}…"):
-                _index_single_pdf(game_id, tmp_path, doc_name)
+                _index_single_doc(game_id, tmp_path, doc_name, tag)
         finally:
             os.unlink(tmp_path)
         progress.progress((i + 1) / len(uploaded_files), text=f"Indexed {uf.name}")
@@ -232,22 +273,22 @@ def _index_uploaded_pdfs(game_id: str, uploaded_files) -> None:
     st.success(f"Indexed {len(uploaded_files)} document(s).")
 
 
-def _index_folder(game_id: str, folder: Path) -> None:
+def _index_folder(game_id: str, folder: Path, doc_tag: str = "rulebook") -> None:
     if not folder.is_dir():
         st.error(f"Not a directory: {folder}")
         return
-    pdfs = sorted(folder.glob("*.pdf"))
-    if not pdfs:
-        st.warning("No PDF files found in that folder.")
+    docs = sorted(f for f in folder.iterdir() if f.suffix.lower() in _SUPPORTED_EXTENSIONS)
+    if not docs:
+        st.warning("No supported files found (PDF, Markdown).")
         return
     progress = st.progress(0, text="Indexing folder…")
-    for i, pdf_path in enumerate(pdfs):
-        doc_name = pdf_path.stem
-        with st.spinner(f"Processing {pdf_path.name}…"):
-            _index_single_pdf(game_id, pdf_path, doc_name)
-        progress.progress((i + 1) / len(pdfs), text=f"Indexed {pdf_path.name}")
+    for i, doc_path in enumerate(docs):
+        doc_name = doc_path.stem
+        with st.spinner(f"Processing {doc_path.name}…"):
+            _index_single_doc(game_id, doc_path, doc_name, doc_tag)
+        progress.progress((i + 1) / len(docs), text=f"Indexed {doc_path.name}")
     progress.empty()
-    st.success(f"Indexed {len(pdfs)} document(s) from folder.")
+    st.success(f"Indexed {len(docs)} document(s) from folder.")
 
 
 def _remove_document(game_id: str, doc_name: str) -> None:
@@ -257,4 +298,10 @@ def _remove_document(game_id: str, doc_name: str) -> None:
     cache_path = DATA_DIR / "games" / game_id / "extracted" / f"{doc_name}.json"
     if cache_path.exists():
         cache_path.unlink()
+    # Remove stored document (check both old pdfs/ dir and new docs/ dir)
+    for subdir in ("docs", "pdfs"):
+        for ext in _SUPPORTED_EXTENSIONS:
+            doc_file = DATA_DIR / "games" / game_id / subdir / f"{doc_name}{ext}"
+            if doc_file.exists():
+                doc_file.unlink()
     st.toast(f"Removed {doc_name}")
