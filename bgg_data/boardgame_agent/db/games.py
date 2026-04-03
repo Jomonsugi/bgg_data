@@ -57,9 +57,23 @@ def init_db(db_path: Path = GAMES_DB_PATH) -> None:
                 indexed_at         TEXT,
                 embed_model        TEXT,
                 doc_tag            TEXT NOT NULL DEFAULT 'rulebook',
+                has_spreads        INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(game_id, doc_name)
             );
 
+            -- Migration: add has_spreads if missing (existing DBs)
+            """
+        )
+        # Check if column exists; add if not.
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(documents)").fetchall()}
+        if "has_spreads" not in cols:
+            conn.execute("ALTER TABLE documents ADD COLUMN has_spreads INTEGER NOT NULL DEFAULT 0")
+        if "vlm_model" not in cols:
+            conn.execute("ALTER TABLE documents ADD COLUMN vlm_model TEXT")
+        if "vlm_enriched_at" not in cols:
+            conn.execute("ALTER TABLE documents ADD COLUMN vlm_enriched_at TEXT")
+        conn.executescript(
+            """
             CREATE TABLE IF NOT EXISTS game_search_domains (
                 id      INTEGER PRIMARY KEY AUTOINCREMENT,
                 game_id TEXT NOT NULL,
@@ -160,6 +174,34 @@ def register_document(
                 embed_model or EMBED_MODEL_NAME,
                 doc_tag,
             ),
+        )
+
+
+def update_has_spreads(
+    game_id: str,
+    doc_name: str,
+    has_spreads: bool,
+    db_path: Path = GAMES_DB_PATH,
+) -> None:
+    """Update the has_spreads flag for a document."""
+    with _connect(db_path) as conn:
+        conn.execute(
+            "UPDATE documents SET has_spreads = ? WHERE game_id = ? AND doc_name = ?",
+            (int(has_spreads), game_id, doc_name),
+        )
+
+
+def update_vlm_enrichment(
+    game_id: str,
+    doc_name: str,
+    vlm_model: str,
+    db_path: Path = GAMES_DB_PATH,
+) -> None:
+    """Record that a document was enriched with a VLM model."""
+    with _connect(db_path) as conn:
+        conn.execute(
+            "UPDATE documents SET vlm_model = ?, vlm_enriched_at = ? WHERE game_id = ? AND doc_name = ?",
+            (vlm_model, datetime.utcnow().isoformat(), game_id, doc_name),
         )
 
 

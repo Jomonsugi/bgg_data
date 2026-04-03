@@ -11,6 +11,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# LangSmith: group runs under this project (default is "default" if unset).
+os.environ.setdefault("LANGCHAIN_PROJECT", "boardgame_agent")
+
 # ── LLM API keys ──────────────────────────────────────────────────────────────
 TOGETHER_API_KEY: str | None = os.getenv("TOGETHER_API_KEY")
 ANTHROPIC_API_KEY: str | None = os.getenv("ANTHROPIC_API_KEY")
@@ -44,6 +47,23 @@ EMBED_MODEL_NAME: str = f"{OLLAMA_EMBED_MODEL} + {SPARSE_EMBED_MODEL}"
 # ── Retrieval ─────────────────────────────────────────────────────────────────
 # Default number of pages retrieved per query. Adjustable in the sidebar.
 RETRIEVAL_TOP_K: int = 5
+
+# ── VLM (picture enrichment) ──────────────────────────────────────────────────
+# Docling-native VLM presets for describing picture bboxes. All run locally.
+# Note: Docling also supports "pixtral" (Pixtral 12B, ~24GB download).
+# Omitted from the default list due to size — add it here if the smaller
+# models don't produce adequate descriptions for a particular rulebook.
+VLM_PRESETS: dict[str, str] = {
+    "SmolVLM (256M)": "smolvlm",
+    "Granite-Vision (2B)": "granite_vision",
+    "Qwen2.5-VL (3B)": "qwen",
+}
+VLM_DEFAULT_PRESET: str = "qwen"
+
+# Minimum picture area as fraction of page area. Pictures smaller than this
+# are skipped during VLM enrichment (e.g., tiny checkbox icons).
+# 0.005 = 0.5% of page → keeps ~24x24pt icons, skips ~12x12pt decorations.
+VLM_PICTURE_AREA_THRESHOLD: float = 0.005
 
 # ── Web Search (Tavily) ───────────────────────────────────────────────────────
 TAVILY_API_KEY: str | None = os.getenv("TAVILY_API_KEY")

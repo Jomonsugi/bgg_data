@@ -13,8 +13,10 @@ import uuid
 
 import streamlit as st
 
+from collections import defaultdict
+
 from bgg_data.boardgame_agent.db.games import init_db, save_qa, set_qa_status
-from bgg_data.boardgame_agent.agent.graph import build_agent, run_query
+from bgg_data.boardgame_agent.agent.graph import build_agent, run_query_stream
 from bgg_data.boardgame_agent.agent.schemas import Citation, QAWithCitations
 from bgg_data.boardgame_agent.rag.indexer import embed_dense_single
 from bgg_data.boardgame_agent.ui.sidebar import render_sidebar
@@ -65,18 +67,39 @@ def _init_session() -> None:
 
 # ── Citation rendering ────────────────────────────────────────────────────────
 
-def _render_citation_chips(citations: list[dict], game_id: str) -> None:
+def _merge_citation_chips(citations: list[dict]) -> list[dict]:
+    """Merge citations that share the same (doc_name, page_num).
+
+    Combines bbox_indices arrays and deduplicates. This is a UI-level safety
+    net — the submit_answer tool already merges, but legacy data or edge cases
+    may still produce duplicates.
+    """
+    grouped: dict[tuple, list[int]] = defaultdict(list)
+    order: list[tuple] = []
+    for c in citations:
+        key = (c.get("doc_name", ""), c.get("page_num", 0))
+        if key not in grouped:
+            order.append(key)
+        grouped[key].extend(c.get("bbox_indices", []))
+    return [
+        {"doc_name": doc, "page_num": page, "bbox_indices": sorted(set(grouped[(doc, page)]))}
+        for doc, page in order
+    ]
+
+
+def _render_citation_chips(citations: list[dict], game_id: str, msg_idx: int = 0) -> None:
     """Render each citation as a clickable button that updates the PDF panel."""
     if not citations:
         return
+    merged = _merge_citation_chips(citations)
     st.markdown("**Citations:**")
-    cols = st.columns(min(len(citations), 4))
-    for i, c in enumerate(citations):
+    cols = st.columns(min(len(merged), 4))
+    for i, c in enumerate(merged):
         doc = c.get("doc_name", "")
         page = c.get("page_num", "?")
         label = f"📄 {doc} · p.{page}"
         with cols[i % 4]:
-            if st.button(label, key=f"cite_{id(c)}_{i}", width='stretch'):
+            if st.button(label, key=f"cite_{msg_idx}_{doc}_{page}_{i}", width='stretch'):
                 st.session_state.active_citation = c
                 st.session_state.active_doc = doc
                 st.rerun()
@@ -126,12 +149,12 @@ def _render_web_sources(web_sources: list[dict | str]) -> None:
             st.markdown(f"- [{ws}]({ws})")
 
 
-def _render_message(msg: dict, game_id: str) -> None:
+def _render_message(msg: dict, game_id: str, msg_idx: int = 0) -> None:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
         if msg["role"] == "assistant":
             if msg.get("citations"):
-                _render_citation_chips(msg["citations"], game_id)
+                _render_citation_chips(msg["citations"], game_id, msg_idx=msg_idx)
             if msg.get("web_sources"):
                 _render_web_sources(msg["web_sources"])
             _render_accept_buttons(msg)
@@ -272,8 +295,8 @@ def main() -> None:
     # ── Chat column ───────────────────────────────────────────────────────────
     with chat_col:
         # Render conversation history
-        for msg in st.session_state.messages:
-            _render_message(msg, game_id)
+        for msg_i, msg in enumerate(st.session_state.messages):
+            _render_message(msg, game_id, msg_idx=msg_i)
 
         # Input
         if query := st.chat_input("Ask a rules question…"):
@@ -289,15 +312,35 @@ def main() -> None:
                 game_id, game_name, selected_model, enable_web_search
             )
             agent_config["top_k"] = top_k
+            # Clear tool call cache for each new query
+            agent_config.pop("_tool_cache", None)
 
             with st.chat_message("assistant"):
-                with st.spinner("Consulting the rulebook…"):
-                    qa: QAWithCitations = run_query(compiled, game_id, query, thread_id=st.session_state.session_thread_id)
+                status_container = st.status("Thinking...", expanded=False)
+
+                def _on_tool_start(tool_name: str, args: dict) -> None:
+                    if tool_name == "search_rulebook":
+                        source = args.get("source", "all")
+                        label = f"Searching documents ({source})..." if source != "all" else "Searching documents..."
+                        status_container.update(label=label)
+                    elif tool_name == "search_web":
+                        status_container.update(label="Searching the web...")
+                    elif tool_name == "get_past_answers":
+                        status_container.update(label="Checking past answers...")
+                    elif tool_name == "submit_answer":
+                        status_container.update(label="Preparing answer...")
+
+                qa: QAWithCitations = run_query_stream(
+                    compiled, game_id, query,
+                    thread_id=st.session_state.session_thread_id,
+                    on_tool_start=_on_tool_start,
+                )
+                status_container.update(label="Done", state="complete")
 
                 st.markdown(qa.answer)
 
                 citations_dicts = [c.model_dump() for c in qa.citations]
-                _render_citation_chips(citations_dicts, game_id)
+                _render_citation_chips(citations_dicts, game_id, msg_idx=len(st.session_state.messages))
 
                 web_source_dicts = [ws.model_dump() if hasattr(ws, 'model_dump') else ws for ws in qa.web_sources]
                 if web_source_dicts:

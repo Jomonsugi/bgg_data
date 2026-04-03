@@ -16,6 +16,8 @@ from bgg_data.boardgame_agent.config import (
     RETRIEVAL_TOP_K,
     SPARSE_EMBED_MODEL,
     TAVILY_API_KEY,
+    VLM_DEFAULT_PRESET,
+    VLM_PRESETS,
 )
 from bgg_data.boardgame_agent.db.games import (
     add_search_domain,
@@ -29,8 +31,15 @@ from bgg_data.boardgame_agent.db.games import (
     register_document,
     remove_search_domain,
     update_doc_tag,
+    update_has_spreads,
+    update_vlm_enrichment,
 )
-from bgg_data.boardgame_agent.rag.extractor import chunk_by_sections, get_or_extract
+from bgg_data.boardgame_agent.rag.extractor import (
+    chunk_by_sections,
+    get_or_extract,
+    load_cached_pages,
+    re_enrich_pictures,
+)
 from bgg_data.boardgame_agent.rag.indexer import build_index, reindex_all, remove_doc_from_index, update_doc_tag_in_index
 
 
@@ -86,6 +95,11 @@ def render_sidebar() -> tuple[str | None, str | None, str, int, bool]:
         selected_game_id = None
 
         if game_names:
+            # Apply pending selection from game creation (set before widget renders).
+            pending = st.session_state.pop("_pending_game_idx", None)
+            if pending is not None:
+                st.session_state["selected_game_idx"] = pending
+
             idx = st.selectbox(
                 "Select game",
                 options=range(len(game_names)),
@@ -101,12 +115,11 @@ def render_sidebar() -> tuple[str | None, str | None, str, int, bool]:
             if st.button("Create game", key="create_game_btn") and new_name.strip():
                 gid = _game_id_from_name(new_name)
                 create_game(gid, new_name.strip())
-                # Auto-select the newly created game so uploads go to it.
+                # Queue the new index so the selectbox picks it up on rerun.
                 refreshed = get_all_games()
                 new_ids = [g["game_id"] for g in refreshed]
                 if gid in new_ids:
-                    st.session_state["selected_game_idx"] = new_ids.index(gid)
-                st.success(f"Created & selected: {new_name}")
+                    st.session_state["_pending_game_idx"] = new_ids.index(gid)
                 st.rerun()
 
         if selected_game_id is None:
@@ -121,7 +134,7 @@ def render_sidebar() -> tuple[str | None, str | None, str, int, bool]:
 
         if docs:
             for doc in docs:
-                col_name, col_tag, col_del = st.columns([3, 2, 1])
+                col_name, col_tag, col_spread, col_del = st.columns([4, 3, 2, 1])
                 col_name.write(f"📄 {doc['doc_name']}")
                 current_tag = doc.get("doc_tag", "rulebook")
                 new_tag = col_tag.text_input(
@@ -135,8 +148,61 @@ def render_sidebar() -> tuple[str | None, str | None, str, int, bool]:
                     update_doc_tag(selected_game_id, doc["doc_name"], new_tag)
                     update_doc_tag_in_index(selected_game_id, doc["doc_name"], new_tag)
                     st.rerun()
+                current_spreads = bool(doc.get("has_spreads", 0))
+                new_spreads = col_spread.checkbox(
+                    "Spreads",
+                    value=current_spreads,
+                    key=f"spread_{doc['doc_name']}",
+                    help="Check if this PDF has two-page spreads (landscape pages with two logical pages side by side).",
+                )
+                if new_spreads != current_spreads:
+                    update_has_spreads(selected_game_id, doc["doc_name"], new_spreads)
+                    # Re-extract with the new spread setting and rebuild the index
+                    doc_path = Path(doc.get("pdf_path", ""))
+                    if doc_path.exists():
+                        with st.spinner(f"Re-indexing {doc['doc_name']} with spread {'on' if new_spreads else 'off'}…"):
+                            _reindex_doc(selected_game_id, doc["doc_name"], doc_path, current_tag, new_spreads)
+                    st.rerun()
                 if col_del.button("✕", key=f"del_doc_{doc['doc_name']}", help="Remove"):
                     _remove_document(selected_game_id, doc["doc_name"])
+                    st.rerun()
+
+                # VLM picture enrichment (PDF documents only)
+                from bgg_data.boardgame_agent.ui.pdf_panel import get_pdf_path
+                if get_pdf_path(selected_game_id, doc["doc_name"]):
+                    with st.expander("Picture enrichment", expanded=False):
+                        current_vlm = doc.get("vlm_model")
+                        vlm_labels = list(VLM_PRESETS.keys())
+                        default_idx = next(
+                            (i for i, k in enumerate(vlm_labels) if VLM_PRESETS[k] == (current_vlm or VLM_DEFAULT_PRESET)),
+                            0,
+                        )
+                        col_vlm, col_btn = st.columns([3, 2])
+                        selected_vlm_label = col_vlm.selectbox(
+                            "VLM model",
+                            options=vlm_labels,
+                            index=default_idx,
+                            key=f"vlm_{doc['doc_name']}",
+                            label_visibility="collapsed",
+                        )
+                        selected_vlm_preset = VLM_PRESETS[selected_vlm_label]
+                        btn_label = "Re-enrich" if current_vlm else "Enrich pictures"
+                        if col_btn.button(btn_label, key=f"enrich_{doc['doc_name']}"):
+                            with st.spinner(f"Enriching pictures with {selected_vlm_label}…"):
+                                count = re_enrich_pictures(
+                                    selected_game_id,
+                                    doc["doc_name"],
+                                    vlm_preset=selected_vlm_preset,
+                                    has_spreads=current_spreads,
+                                )
+                                update_vlm_enrichment(selected_game_id, doc["doc_name"], selected_vlm_preset)
+                                # Re-index with enriched text
+                                _reindex_after_enrichment(selected_game_id, doc["doc_name"], current_tag)
+                            st.success(f"Enriched {count} pictures with {selected_vlm_label}")
+                            st.rerun()
+                        if current_vlm:
+                            enriched_at = doc.get("vlm_enriched_at", "")
+                            st.caption(f"Enriched with {current_vlm} ({enriched_at[:10] if enriched_at else ''})")
                     st.rerun()
         else:
             st.caption("No documents indexed yet.")
@@ -151,8 +217,9 @@ def render_sidebar() -> tuple[str | None, str | None, str, int, bool]:
         if uploaded:
             st.caption("Tag each document before indexing:")
             file_tags: dict[str, str] = {}
+            file_spreads: dict[str, bool] = {}
             for uf in uploaded:
-                col_name, col_tag = st.columns([3, 2])
+                col_name, col_tag, col_spread = st.columns([3, 2, 1])
                 col_name.write(f"📄 {uf.name}")
                 file_tags[uf.name] = col_tag.text_input(
                     "tag",
@@ -161,12 +228,17 @@ def render_sidebar() -> tuple[str | None, str | None, str, int, bool]:
                     label_visibility="collapsed",
                     placeholder="rulebook",
                 )
+                file_spreads[uf.name] = col_spread.checkbox(
+                    "Spreads",
+                    key=f"upload_spread_{uf.name}",
+                    help="Check if this PDF has two-page spreads.",
+                )
             if st.button(
                 f"Index to **{selected_game_name}**",
                 key="index_pdfs_btn",
                 type="primary",
             ):
-                _index_uploaded_docs(selected_game_id, uploaded, file_tags)
+                _index_uploaded_docs(selected_game_id, uploaded, file_tags, file_spreads)
                 st.rerun()
 
         # Folder path shortcut (useful for local use)
@@ -232,10 +304,10 @@ def _copy_doc_to_store(game_id: str, src_path: Path, doc_name: str) -> Path:
     return dest
 
 
-def _index_single_doc(game_id: str, doc_path: Path, doc_name: str, doc_tag: str = "rulebook") -> None:
+def _index_single_doc(game_id: str, doc_path: Path, doc_name: str, doc_tag: str = "rulebook", has_spreads: bool = False) -> None:
     """Extract, chunk, embed, and register a single document (PDF or markdown)."""
     stored_path = _copy_doc_to_store(game_id, doc_path, doc_name)
-    pages = get_or_extract(stored_path, game_id, doc_name)
+    pages = get_or_extract(stored_path, game_id, doc_name, has_spreads=has_spreads)
     print(f"  {doc_name}: {len(pages)} pages/sections extracted")
     # Inject doc_tag into page dicts so it flows into the Qdrant payload.
     for page in pages:
@@ -248,24 +320,32 @@ def _index_single_doc(game_id: str, doc_path: Path, doc_name: str, doc_tag: str 
     register_document(game_id, doc_name, stored_path, cache_path, doc_tag=doc_tag)
 
 
-def _index_uploaded_docs(game_id: str, uploaded_files, file_tags: dict[str, str]) -> None:
+def _index_uploaded_docs(
+    game_id: str,
+    uploaded_files,
+    file_tags: dict[str, str],
+    file_spreads: dict[str, bool] | None = None,
+) -> None:
     """Index uploaded files with per-file tags.
 
     *file_tags* maps filename → tag (e.g. ``{"rules.pdf": "rulebook", "faq.md": "faq"}``).
+    *file_spreads* maps filename → bool for spread-page PDFs.
     """
     import tempfile, os
 
+    file_spreads = file_spreads or {}
     progress = st.progress(0, text="Indexing…")
     for i, uf in enumerate(uploaded_files):
         doc_name = Path(uf.name).stem
         ext = Path(uf.name).suffix.lower()
         tag = file_tags.get(uf.name, "rulebook")
+        spreads = file_spreads.get(uf.name, False)
         with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
             tmp.write(uf.read())
             tmp_path = Path(tmp.name)
         try:
             with st.spinner(f"Processing {uf.name}…"):
-                _index_single_doc(game_id, tmp_path, doc_name, tag)
+                _index_single_doc(game_id, tmp_path, doc_name, tag, has_spreads=spreads)
         finally:
             os.unlink(tmp_path)
         progress.progress((i + 1) / len(uploaded_files), text=f"Indexed {uf.name}")
@@ -289,6 +369,34 @@ def _index_folder(game_id: str, folder: Path, doc_tag: str = "rulebook") -> None
         progress.progress((i + 1) / len(docs), text=f"Indexed {doc_path.name}")
     progress.empty()
     st.success(f"Indexed {len(docs)} document(s) from folder.")
+
+
+def _reindex_doc(game_id: str, doc_name: str, doc_path: Path, doc_tag: str, has_spreads: bool) -> None:
+    """Re-extract and re-index a single document (e.g. after toggling spreads)."""
+    # Remove old index entries
+    remove_doc_from_index(doc_name, game_id)
+    # Delete cached extraction so it re-runs
+    cache_path = DATA_DIR / "games" / game_id / "extracted" / f"{doc_name}.json"
+    if cache_path.exists():
+        cache_path.unlink()
+    # Re-extract and re-index
+    pages = get_or_extract(doc_path, game_id, doc_name, force=True, has_spreads=has_spreads)
+    for page in pages:
+        page["doc_tag"] = doc_tag
+    chunks = chunk_by_sections(pages)
+    build_index(chunks)
+
+
+def _reindex_after_enrichment(game_id: str, doc_name: str, doc_tag: str) -> None:
+    """Re-chunk and re-index after VLM enrichment (no re-extraction needed)."""
+    remove_doc_from_index(doc_name, game_id)
+    pages = load_cached_pages(game_id, doc_name)
+    if pages is None:
+        return
+    for page in pages:
+        page["doc_tag"] = doc_tag
+    chunks = chunk_by_sections(pages)
+    build_index(chunks)
 
 
 def _remove_document(game_id: str, doc_name: str) -> None:

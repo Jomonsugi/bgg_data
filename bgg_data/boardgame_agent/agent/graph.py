@@ -4,15 +4,16 @@ Architecture
 ------------
 1. call_agent  — LLM with bound tools (ReAct loop)
 2. call_tools  — ToolNode executes requested tool calls
-3. format_answer — final LLM call with structured output → QAWithCitations
+3. finalize    — thin node (no LLM) that parses submit_answer output into state
 
-The graph loops between call_agent and call_tools until the LLM stops
-requesting tools, then routes to format_answer which produces the structured
-response stored in state["final_answer"].
+The graph loops between call_agent and call_tools until the agent calls the
+``submit_answer`` tool.  The ``finalize`` node extracts the JSON payload from
+that tool's ToolMessage and writes it into ``state["final_answer"]``.
 """
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import uuid
 from typing import Any
@@ -24,7 +25,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
 from qdrant_client import QdrantClient
 
-from bgg_data.boardgame_agent.agent.prompts import FORMAT_PROMPT, build_system_prompt
+from bgg_data.boardgame_agent.agent.prompts import build_system_prompt
 from bgg_data.boardgame_agent.agent.schemas import QAWithCitations
 from bgg_data.boardgame_agent.agent.state import AgentState
 from bgg_data.boardgame_agent.agent.tools import make_all_tools
@@ -130,36 +131,34 @@ def build_agent(
 
     tool_node = ToolNode(tools)
 
-    def format_answer(state: AgentState) -> dict:
-        """Extract structured citations from the agent's answer.
+    def finalize(state: AgentState) -> dict:
+        """Extract structured answer from submit_answer tool output (no LLM call).
 
-        The agent's natural answer is preserved as-is. The formatter only
-        extracts citation and web source metadata from the tool outputs.
+        Falls back to the agent's last text if submit_answer was not called.
         """
-        structured_llm = llm.with_structured_output(QAWithCitations)
+        # Look for the submit_answer ToolMessage
+        for msg in reversed(state["messages"]):
+            if isinstance(msg, ToolMessage) and getattr(msg, "name", "") == "submit_answer":
+                try:
+                    data = json.loads(msg.content)
+                    return {"final_answer": data}
+                except (json.JSONDecodeError, TypeError):
+                    break
+            if isinstance(msg, AIMessage):
+                break
 
-        # Collect tool outputs so the formatter can extract citation details.
-        tool_outputs = "\n\n".join(
-            f"[Tool: {m.name}]\n{m.content}"
-            for m in state["messages"]
-            if isinstance(m, ToolMessage)
-        )
+        # Fallback: agent answered without calling submit_answer
         last_ai = next(
             (m for m in reversed(state["messages"]) if isinstance(m, AIMessage)),
             None,
         )
-        agent_answer = last_ai.content if last_ai else ""
-
-        format_input = (
-            f"Agent answer (preserve this text as-is in the answer field):\n"
-            f"{agent_answer}\n\n"
-            f"Tool outputs (extract citations and web sources from these):\n"
-            f"{tool_outputs}"
-        )
-        qa: QAWithCitations = structured_llm.invoke(
-            [SystemMessage(content=FORMAT_PROMPT), HumanMessage(content=format_input)]
-        )
-        return {"final_answer": qa.model_dump()}
+        return {
+            "final_answer": {
+                "answer": last_ai.content if last_ai else "No answer produced.",
+                "citations": [],
+                "web_sources": [],
+            }
+        }
 
     # ── Routing ───────────────────────────────────────────────────────────────
 
@@ -167,23 +166,38 @@ def build_agent(
         last = state["messages"][-1]
         if isinstance(last, AIMessage) and getattr(last, "tool_calls", None):
             return "tools"
-        return "format_answer"
+        # Agent responded with text only (no tool calls) — finalize with fallback
+        return "finalize"
+
+    def after_tools(state: AgentState) -> str:
+        """Route after tool execution: finalize if submit_answer was called."""
+        for msg in reversed(state["messages"]):
+            if isinstance(msg, ToolMessage):
+                if getattr(msg, "name", "") == "submit_answer":
+                    return "finalize"
+            elif isinstance(msg, AIMessage):
+                break
+        return "agent"
 
     # ── Graph ─────────────────────────────────────────────────────────────────
 
     graph = StateGraph(AgentState)
     graph.add_node("agent", call_agent)
     graph.add_node("tools", tool_node)
-    graph.add_node("format_answer", format_answer)
+    graph.add_node("finalize", finalize)
 
     graph.set_entry_point("agent")
     graph.add_conditional_edges(
         "agent",
         should_continue,
-        {"tools": "tools", "format_answer": "format_answer"},
+        {"tools": "tools", "finalize": "finalize"},
     )
-    graph.add_edge("tools", "agent")
-    graph.add_edge("format_answer", END)
+    graph.add_conditional_edges(
+        "tools",
+        after_tools,
+        {"agent": "agent", "finalize": "finalize"},
+    )
+    graph.add_edge("finalize", END)
 
     conn = sqlite3.connect(str(CHECKPOINTS_DB_PATH), check_same_thread=False)
     checkpointer = SqliteSaver(conn)
@@ -192,29 +206,71 @@ def build_agent(
     return compiled, llm, qdrant_client, agent_config
 
 
+# ── Query helpers ────────────────────────────────────────────────────────────
+
+def _make_input(game_id: str, query: str) -> dict:
+    return {
+        "messages": [HumanMessage(content=query)],
+        "game_id": game_id,
+        "game_name": "",
+        "final_answer": None,
+    }
+
+
+def _make_config(thread_id: str | None) -> dict:
+    return {
+        "configurable": {"thread_id": thread_id or str(uuid.uuid4())},
+        "recursion_limit": 25,
+    }
+
+
 def run_query(
     compiled_graph: Any,
     game_id: str,
     query: str,
     thread_id: str | None = None,
 ) -> QAWithCitations:
-    """Invoke the agent for *query* and return structured QAWithCitations.
-
-    Pass a stable *thread_id* to share conversation context across queries in a
-    session (enables follow-up questions). Old RAG tool outputs are compressed
-    in call_agent so only Q&A text accumulates, not raw retrieval dumps.
-    """
-    config = {"configurable": {"thread_id": thread_id or str(uuid.uuid4())}, "recursion_limit": 25}
+    """Invoke the agent (blocking) and return structured QAWithCitations."""
     result = compiled_graph.invoke(
-        {
-            "messages": [HumanMessage(content=query)],
-            "game_id": game_id,
-            "game_name": "",
-            "final_answer": None,
-        },
-        config=config,
+        _make_input(game_id, query),
+        config=_make_config(thread_id),
     )
     raw = result.get("final_answer") or {}
     return QAWithCitations(**raw) if raw else QAWithCitations(
         answer="No answer produced.", citations=[]
     )
+
+
+def run_query_stream(
+    compiled_graph: Any,
+    game_id: str,
+    query: str,
+    thread_id: str | None = None,
+    on_tool_start: Any = None,
+):
+    """Stream the agent and call *on_tool_start(tool_name, args)* for each tool.
+
+    Returns the final QAWithCitations when the stream is exhausted.
+    """
+    final_answer: dict | None = None
+
+    for chunk in compiled_graph.stream(
+        _make_input(game_id, query),
+        config=_make_config(thread_id),
+        stream_mode="updates",
+    ):
+        for node_name, update in chunk.items():
+            # When the agent node emits tool calls, notify the callback
+            if node_name == "agent" and on_tool_start:
+                for msg in update.get("messages", []):
+                    if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+                        for tc in msg.tool_calls:
+                            on_tool_start(tc["name"], tc.get("args", {}))
+
+            # Capture the final answer from the finalize node
+            if node_name == "finalize" and update.get("final_answer"):
+                final_answer = update["final_answer"]
+
+    if final_answer:
+        return QAWithCitations(**final_answer)
+    return QAWithCitations(answer="No answer produced.", citations=[])

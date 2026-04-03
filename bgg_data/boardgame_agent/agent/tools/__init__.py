@@ -19,6 +19,7 @@ from bgg_data.boardgame_agent.config import GAMES_DB_PATH
 from .rag import make_rag_tool
 from .web_search import make_web_search_tool
 from .history import make_history_tool
+from .submit_answer import make_submit_answer_tool
 
 
 def make_all_tools(
@@ -35,9 +36,10 @@ def make_all_tools(
     every tool call is automatically scoped to the right game.
     """
     tools: list[BaseTool] = [
-        make_rag_tool(game_id, qdrant_client, config),
+        make_rag_tool(game_id, qdrant_client, config, db_path=db_path),
         make_history_tool(game_id, db_path),
+        make_submit_answer_tool(),
     ]
     if enable_web_search:
-        tools.append(make_web_search_tool(game_id, db_path))
+        tools.append(make_web_search_tool(game_id, db_path, config=config))
     return tools
