@@ -203,7 +203,6 @@ def render_sidebar() -> tuple[str | None, str | None, str, int, bool]:
                         if current_vlm:
                             enriched_at = doc.get("vlm_enriched_at", "")
                             st.caption(f"Enriched with {current_vlm} ({enriched_at[:10] if enriched_at else ''})")
-                    st.rerun()
         else:
             st.caption("No documents indexed yet.")
 

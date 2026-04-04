@@ -51,8 +51,9 @@ dev = [
     "ipykernel>=7.1.0",
 ]
 
-[tool.setuptools.packages.find]
-where = ["."]
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [tool.uv.workspace]
 members = [

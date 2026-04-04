@@ -61,9 +61,10 @@ VLM_PRESETS: dict[str, str] = {
 VLM_DEFAULT_PRESET: str = "qwen"
 
 # Minimum picture area as fraction of page area. Pictures smaller than this
-# are skipped during VLM enrichment (e.g., tiny checkbox icons).
-# 0.005 = 0.5% of page → keeps ~24x24pt icons, skips ~12x12pt decorations.
-VLM_PICTURE_AREA_THRESHOLD: float = 0.005
+# are skipped during VLM enrichment.
+# 0.001 = 0.1% of page → captures game icons (~24x24pt) while skipping
+# tiny decorative elements (~8x8pt).
+VLM_PICTURE_AREA_THRESHOLD: float = 0.001
 
 # ── Web Search (Tavily) ───────────────────────────────────────────────────────
 TAVILY_API_KEY: str | None = os.getenv("TAVILY_API_KEY")
